@@ -1,0 +1,53 @@
+name: Shabbat mode tick
+
+on:
+  schedule:
+    # Friday & Saturday, every 15 min, UTC calendar days — covers the
+    # default Friday-noon-ET ON flip and general Friday/Saturday daytime.
+    - cron: '*/15 * * * 5,6'
+    # Early Sunday UTC — this is still Saturday NIGHT in US Eastern time
+    # (22:00 ET Sat ≈ 02:00-03:00 UTC Sun depending on EST/EDT), which is
+    # when the default OFF flip actually happens.
+    - cron: '*/15 0-5 * * 0'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force a flip regardless of the day/time (on/off), or leave blank for a normal tick'
+        required: false
+        type: choice
+        options:
+          - ''
+          - 'on'
+          - 'off'
+        default: ''
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run tick
+        env:
+          # Official ThinQ Connect API (preferred channel, if writable on your model)
+          THINQ_PAT: ${{ secrets.THINQ_PAT }}
+          THINQ_CLIENT_ID: ${{ secrets.THINQ_CLIENT_ID }}
+          THINQ_DEVICE_ID: ${{ secrets.THINQ_DEVICE_ID }}
+          THINQ_SABBATH_ON_VALUE: ${{ secrets.THINQ_SABBATH_ON_VALUE }}
+          THINQ_SABBATH_OFF_VALUE: ${{ secrets.THINQ_SABBATH_OFF_VALUE }}
+          # App channel fallback (used automatically when the above isn't writable)
+          THINQ_V2_REFRESH_TOKEN: ${{ secrets.THINQ_V2_REFRESH_TOKEN }}
+          THINQ_V2_OAUTH_URL: ${{ secrets.THINQ_V2_OAUTH_URL }}
+          THINQ_V2_USER_NUMBER: ${{ secrets.THINQ_V2_USER_NUMBER }}
+          THINQ_V2_CLIENT_ID: ${{ secrets.THINQ_V2_CLIENT_ID }}
+          THINQ_V2_DEVICE_ID: ${{ secrets.THINQ_V2_DEVICE_ID }}
+          THINQ_V2_SABBATH_CTRL: ${{ secrets.THINQ_V2_SABBATH_CTRL }}
+          # Schedule config (all optional — defaults shown)
+          SHABBAT_ENABLED: ${{ secrets.SHABBAT_ENABLED }}       # default: true
+          SHABBAT_ON_TIME: ${{ secrets.SHABBAT_ON_TIME }}       # default: 12:00 (ET, Friday)
+          SHABBAT_OFF_ENABLED: ${{ secrets.SHABBAT_OFF_ENABLED }} # default: true
+          SHABBAT_OFF_TIME: ${{ secrets.SHABBAT_OFF_TIME }}     # default: 22:00 (ET, Saturday)
+          FORCE: ${{ github.event.inputs.force }}
+        run: node scripts/tick.js

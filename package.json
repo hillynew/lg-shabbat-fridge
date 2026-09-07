@@ -1,0 +1,17 @@
+{
+  "name": "lg-shabbat-fridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Turns an LG WiFi fridge's Sabbath mode on every Friday and off Saturday night, run for free on a GitHub Actions schedule.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "tick": "node scripts/tick.js",
+    "manual:on": "node scripts/manual.js on",
+    "manual:off": "node scripts/manual.js off",
+    "setup:official": "node scripts/setup-official.js",
+    "setup:v2": "node scripts/setup-v2.js"
+  }
+}
