@@ -21,34 +21,6 @@ async function prompt(q) {
   return a.trim();
 }
 
-// Minimal masked password prompt — avoids pulling in an extra dependency
-// just to hide keystrokes. Falls back to a plain (visible) prompt when
-// stdin isn't a TTY (e.g. piped input).
-function promptHidden(q) {
-  if (!stdin.isTTY) return prompt(q);
-  return new Promise((resolve) => {
-    stdout.write(q);
-    let value = '';
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.setEncoding('utf8');
-    const onData = (ch) => {
-      if (ch === '\n' || ch === '\r' || ch === '') {
-        stdin.setRawMode(false);
-        stdin.pause();
-        stdin.removeListener('data', onData);
-        stdout.write('\n');
-        resolve(value.trim());
-        return;
-      }
-      if (ch === '') { stdout.write('\n'); process.exit(1); }
-      if (ch === '') { value = value.slice(0, -1); return; }
-      value += ch;
-    };
-    stdin.on('data', onData);
-  });
-}
-
 async function pickAndProbe(devices, cfg) {
   const fridges = devices.filter((d) => d.is_refrigerator);
   const list = fridges.length ? fridges : devices;
@@ -97,7 +69,10 @@ async function main() {
     tokens = await v2CompleteLogin(url);
   } else {
     const email = await prompt('LG account email: ');
-    const password = await promptHidden('LG account password: ');
+    // Visible, not masked — this runs locally in your own terminal, and a
+    // custom hidden-input implementation here was unreliable across
+    // terminals. Simpler and it actually works.
+    const password = await prompt('LG account password (visible as you type): ');
     tokens = await v2PasswordLogin(email, password);
   }
 
