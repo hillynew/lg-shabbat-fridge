@@ -2,17 +2,23 @@ name: Shabbat mode tick
 
 on:
   schedule:
-    # Friday & Saturday, every 15 min, UTC calendar days — covers the
-    # default Friday-noon-ET ON flip and general Friday/Saturday daytime.
-    - cron: '*/15 * * * 5,6'
-    # Early Sunday UTC — this is still Saturday NIGHT in US Eastern time
-    # (22:00 ET Sat ≈ 02:00-03:00 UTC Sun depending on EST/EDT), which is
-    # when the default OFF flip actually happens.
-    - cron: '*/15 0-5 * * 0'
+    # Yom Tov can fall on ANY day of the week (not just Fri/Sat), so this
+    # runs every day, in two narrow daily windows rather than around the
+    # clock — keeps this comfortably inside GitHub's free Actions minutes
+    # even on a private repo (~1200 runs/month at 1 billed minute each).
+    #
+    # Midday window: covers ON time (solar noon, fixed local clock time)
+    # under both EDT (UTC-4) and EST (UTC-5), with margin.
+    - cron: '*/15 15-18 * * *'
+    # Evening window: covers OFF time (sunset + SHABBAT_HAVDALAH_MINUTES)
+    # under both DST states across the whole year at ~26°N (South FL):
+    # earliest ~18:30 ET in December, latest ~21:15 ET in June. Padded and
+    # crosses UTC midnight.
+    - cron: '*/15 21-23,0-2 * * *'
   workflow_dispatch:
     inputs:
       force:
-        description: 'Force a flip regardless of the day/time (on/off), or leave blank for a normal tick'
+        description: 'Force a flip regardless of the calendar (on/off), or leave blank for a normal tick'
         required: false
         type: choice
         options:
@@ -44,10 +50,14 @@ jobs:
           THINQ_V2_CLIENT_ID: ${{ secrets.THINQ_V2_CLIENT_ID }}
           THINQ_V2_DEVICE_ID: ${{ secrets.THINQ_V2_DEVICE_ID }}
           THINQ_V2_SABBATH_CTRL: ${{ secrets.THINQ_V2_SABBATH_CTRL }}
+          # Location (required — pick ONE of these two ways)
+          SHABBAT_ZIP: ${{ secrets.SHABBAT_ZIP }}                 # a US zip code, e.g. 33016
+          SHABBAT_LATITUDE: ${{ secrets.SHABBAT_LATITUDE }}       # alternative to zip
+          SHABBAT_LONGITUDE: ${{ secrets.SHABBAT_LONGITUDE }}
+          SHABBAT_TZID: ${{ secrets.SHABBAT_TZID }}               # default: America/New_York
           # Schedule config (all optional — defaults shown)
-          SHABBAT_ENABLED: ${{ secrets.SHABBAT_ENABLED }}       # default: true
-          SHABBAT_ON_TIME: ${{ secrets.SHABBAT_ON_TIME }}       # default: 12:00 (ET, Friday)
-          SHABBAT_OFF_ENABLED: ${{ secrets.SHABBAT_OFF_ENABLED }} # default: true
-          SHABBAT_OFF_TIME: ${{ secrets.SHABBAT_OFF_TIME }}     # default: 22:00 (ET, Saturday)
+          SHABBAT_ENABLED: ${{ secrets.SHABBAT_ENABLED }}                   # default: true
+          SHABBAT_ON_TIME: ${{ secrets.SHABBAT_ON_TIME }}                   # default: 12:00 local, every Erev Shabbos/Yom Tov
+          SHABBAT_HAVDALAH_MINUTES: ${{ secrets.SHABBAT_HAVDALAH_MINUTES }} # default: 60 (minutes after sunset)
           FORCE: ${{ github.event.inputs.force }}
         run: node scripts/tick.js

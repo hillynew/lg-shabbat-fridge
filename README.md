@@ -1,8 +1,8 @@
 # lg-shabbat-fridge
 
-Turns an LG WiFi refrigerator's **Sabbath mode** on every Friday and back
-off Saturday night — automatically, for free, with no server to run or pay
-for. It runs entirely on a [GitHub Actions](https://github.com/features/actions)
+Turns an LG WiFi refrigerator's **Sabbath mode** on for every **Shabbos and
+Yom Tov** — automatically, for free, with no server to run or pay for. It
+runs entirely on a [GitHub Actions](https://github.com/features/actions)
 schedule in this repo; there's nothing else to host.
 
 This was extracted from a larger internal business app it didn't belong in,
@@ -24,20 +24,39 @@ LG exposes Sabbath mode two different ways, and which one is actually
    resulting **refresh token** is ever kept, never the password.
 
 This tool tries the official API first and automatically falls back to the
-app channel if the official one is read-only on your model — same as the
-original design. A scheduled job (`scripts/tick.js`) checks the real time in
-`America/New_York` on every run and only acts on:
+app channel if the official one is read-only on your model.
 
-- **Friday, at or after `SHABBAT_ON_TIME`** (default `12:00`) → turn ON
-- **Saturday, at or after `SHABBAT_OFF_TIME`** (default `22:00`) → turn OFF
-  (skippable via `SHABBAT_OFF_ENABLED=false` if you'd rather flip it back
-  on manually)
+### The schedule itself
 
-It's stateless: before flipping, it **reads the fridge's current Sabbath
-state** and no-ops if it's already where it should be. That means a missed
-run, a manual flip, or the job simply running again 15 minutes later can
-never double-fire or drift out of sync — there's no "did I already run this
-week" flag to get stuck.
+`src/hebcal.js` computes the real schedule from
+[Hebcal](https://www.hebcal.com)'s public Hebrew-calendar API — not a fixed
+weekly rule — so it's correct for:
+
+- **Every Shabbos** (every Saturday)
+- **Every Yom Tov** (Diaspora scheduling): Rosh Hashana I–II, Yom Kippur,
+  Sukkot I–II, Shmini Atzeret, Simchat Torah, Pesach I–II & VII–VIII,
+  Shavuot I–II. Chol HaMoed, Rosh Chodesh, Chanukah, Purim, and fast days
+  are correctly **excluded** (melacha is permitted on those).
+
+**ON** happens at a fixed local clock time (`SHABBAT_ON_TIME`, default
+`12:00` noon) on the Erev day before each span. **OFF** happens at real
+**sunset + `SHABBAT_HAVDALAH_MINUTES`** (default 60) on the day the span
+ends — computed from actual astronomical sunset for your location, not a
+clock-time guess, so it's correct year-round as sunset drifts.
+
+When spans run back-to-back on the calendar — a 2-day Yom Tov running
+directly into Shabbos, or Yom Tov falling out on Shabbos itself — they
+**merge into one continuous span automatically**. This isn't special-cased:
+the engine just looks at which calendar dates are restricted (every
+Saturday, union every Yom Tov date) and groups consecutive dates together,
+so a 3-day yontif naturally stays on the whole time with no gap.
+
+The scheduled job (`scripts/tick.js`) runs on a cron covering every day of
+the week (Yom Tov isn't only Fri/Sat), fetches the current schedule, and
+converges the fridge to whichever state (ON/OFF) the current moment should
+be in. It's stateless: before flipping, it **reads the fridge's current
+Sabbath state** and no-ops if it's already correct — so a missed run, a
+manual flip, or the job simply running again later is always self-healing.
 
 ## One-time setup
 
@@ -70,37 +89,62 @@ script prints a link, you sign in, then paste back the address of the
 *error page* you land on afterward, which is expected). It then lists your
 devices, probes the selected one, and prints the secrets to save.
 
-### Step 3 — add the printed secrets to this repo
+### Step 3 — add the secrets to this repo
 
 GitHub repo → **Settings → Secrets and variables → Actions → New repository
-secret**. Add whichever block step 1 or 2 printed. You only need ONE
-channel's worth of secrets — the tool auto-detects which one is configured
-(official takes priority if both happen to be set).
+secret**. Add whichever block step 1 or 2 printed (only ONE channel's worth
+is needed — official takes priority if both happen to be set), **plus your
+location**:
 
-Optional schedule secrets (defaults shown — only add these if you want to
-change them):
-
-| Secret | Default | Meaning |
+| Secret | Required? | Meaning |
 |---|---|---|
-| `SHABBAT_ENABLED` | `true` | Master on/off switch for the whole automation |
-| `SHABBAT_ON_TIME` | `12:00` | Friday trigger time, ET, 24h `HH:MM` |
-| `SHABBAT_OFF_ENABLED` | `true` | Whether the Saturday-night OFF flip runs at all |
-| `SHABBAT_OFF_TIME` | `22:00` | Saturday trigger time, ET, 24h `HH:MM` |
+| `SHABBAT_ZIP` | **Yes** (or use lat/long below) | US zip code — used for real sunset times |
+| `SHABBAT_LATITUDE` + `SHABBAT_LONGITUDE` | Alternative to zip | Decimal coordinates, for non-US locations |
+| `SHABBAT_TZID` | No — default `America/New_York` | IANA timezone name |
+| `SHABBAT_ON_TIME` | No — default `12:00` | Local clock time to turn ON each Erev day |
+| `SHABBAT_HAVDALAH_MINUTES` | No — default `60` | Minutes after sunset to turn OFF |
+| `SHABBAT_ENABLED` | No — default `true` | Master kill switch for the whole automation |
 
-### Step 4 — enable Actions and test it
+### Step 4 — sanity-check the schedule
+
+```bash
+SHABBAT_ZIP=33016 npm run preview
+```
+
+Prints the next several months of computed ON/OFF times in plain English —
+check a few against a Jewish calendar before trusting it live. (Once the
+zip secret is saved to GitHub, the scheduled job reads it the same way;
+this is just a local check.)
+
+### Step 5 — enable Actions and test it
 
 Actions are enabled by default on a new repo. Go to the **Actions** tab →
 **Shabbat mode tick** → **Run workflow**, and pick `force: on` or
-`force: off` to test a flip immediately without waiting for Friday. Check
+`force: off` to test a flip immediately without waiting for Shabbos. Check
 the run's log — it prints exactly what channel it used and what it did.
 
 After that, it just runs itself.
+
+## The controller
+
+A simple interactive menu for checking on things without digging through
+GitHub's UI:
+
+```bash
+npm run control
+```
+
+`[1]` current fridge state + what the schedule says right now, `[2]` the
+upcoming schedule, `[3]`/`[4]` force a flip. Reads the same secrets as the
+scheduled job — set them as local environment variables first (see below).
 
 ## Manual local testing
 
 ```bash
 npm run manual:on
 npm run manual:off
+npm run preview
+npm run control
 ```
 
 These read the same secrets as the scheduled job — export them as
@@ -111,12 +155,13 @@ similar works fine for a quick local test).
 
 ## The schedule (`.github/workflows/shabbat-tick.yml`)
 
-The job runs every 15 minutes during the windows that can possibly contain
-the Friday/Saturday triggers (accounting for both EST and EDT), and exits
-instantly as a no-op outside of Friday/Saturday ET — so it costs almost
-nothing even on GitHub's free Actions minutes. If you customize
-`SHABBAT_ON_TIME` / `SHABBAT_OFF_TIME` to fall *outside* the covered UTC
-windows, widen the cron lines in the workflow file to match.
+Since Yom Tov can fall on any day of the week (not just Friday/Saturday),
+the job runs **every day**, in two narrow daily windows rather than around
+the clock: a midday window (covers the fixed noon ON time under both DST
+states) and an evening window (covers sunset+60 under both DST states,
+padded for the earliest-December to latest-June range at ~26°N). That
+keeps it at roughly 1200 runs/month — comfortably inside GitHub's 2000
+free Actions minutes/month even on a private repo.
 
 Making the repo **public** removes any Actions-minutes limit entirely (free
 and unlimited on public repos) if you'd rather not think about it — nothing
@@ -136,6 +181,9 @@ Secrets (which are encrypted at rest and never printed in logs).
   probed capability description, not a credential) but is stored as a
   secret anyway for convenience since GitHub Secrets are simpler to manage
   as a single block than mixing Secrets and Variables.
+- Your zip code / coordinates are sent to Hebcal's public API on every run
+  (needed to compute real sunset times) — no account, no auth, nothing else
+  identifying is sent.
 
 ## Troubleshooting
 
@@ -151,8 +199,12 @@ Secrets (which are encrypted at rest and never printed in logs).
   exactly which commands and fields your model's `ControlWifi` block
   exposes, which is what a fix has to work with.
 - **Nothing happens at the expected time** — check the Actions tab's run
-  history for that Friday/Saturday; the log always states the channel it
-  detected, the current ET clock, and why it did or didn't act.
+  history; the log always states the channel it detected, whether it
+  computed itself to be inside a span, and what it did (or didn't).
+- **Dates look wrong** — run `npm run preview` and compare against a Jewish
+  calendar. If Hebcal's dates themselves look wrong, double check
+  `SHABBAT_ZIP`/coordinates and that Diaspora (not Israel) scheduling is
+  intended — this tool assumes Diaspora by default.
 
 ## Credits
 
@@ -163,3 +215,6 @@ The app-channel client is ported from
 the most battle-tested open reverse-engineering of LG's private API. Every
 constant in `src/thinqV2.js` (app keys, signature secret, header set) is
 public, shipped inside LG's own Android app, and not a secret.
+
+The Hebrew calendar and sunset-based times come from
+[Hebcal](https://www.hebcal.com)'s public REST API.

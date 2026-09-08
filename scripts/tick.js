@@ -1,22 +1,20 @@
 #!/usr/bin/env node
-// The scheduled entry point — run every 15 min by the GitHub Actions
-// workflow. Stateless by design: instead of persisting "did we already
-// flip this week" across ephemeral runners, it reads the fridge's CURRENT
-// Sabbath state before acting and no-ops if it's already where it should
-// be. That also makes a manual flip (or a missed run) self-healing.
+// The scheduled entry point — run on a schedule by the GitHub Actions
+// workflow, covering every day of the week (Yom Tov can fall on any
+// weekday, not just Friday/Saturday). Computes the real Hebrew-calendar
+// Shabbos/Yom Tov spans for the configured location (src/hebcal.js), and
+// converges the fridge to whichever state (ON/OFF) the current moment
+// should be in. Stateless by design: it reads the fridge's CURRENT Sabbath
+// state before acting and no-ops if it's already correct, so a missed run
+// or the job simply running again later is always self-healing.
 
-import { nowETClock } from '../src/time.js';
 import { sabbathControlPath, setSabbathAuto, getCurrentSabbathState } from '../src/control.js';
+import { upcomingSpans } from '../src/hebcal.js';
 
 function envFlag(name, def) {
   const v = process.env[name];
   if (v === undefined || v === '') return def;
   return v === '1' || /^true$/i.test(v);
-}
-
-function envTime(name, def) {
-  const v = process.env[name];
-  return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v || '')) ? v : def;
 }
 
 function normalize(value) {
@@ -52,22 +50,24 @@ async function main() {
     return;
   }
 
-  const onTime = envTime('SHABBAT_ON_TIME', '12:00');
-  const offTime = envTime('SHABBAT_OFF_TIME', '22:00');
-  const offEnabled = envFlag('SHABBAT_OFF_ENABLED', true);
   // Manual override from workflow_dispatch (see .github/workflows/shabbat-tick.yml).
   const force = (process.env.FORCE || '').toLowerCase();
-
-  const { weekday, time } = nowETClock();
-  console.log(`Now: ${weekday} ${time} ET · channel=${path} · on@${onTime} Fri · off@${offEnabled ? offTime : 'disabled'} Sat`);
-
-  if (force === 'on' || (weekday === 'Fri' && time >= onTime)) {
-    await flipIfNeeded(true);
-  } else if (force === 'off' || (offEnabled && weekday === 'Sat' && time >= offTime)) {
-    await flipIfNeeded(false);
-  } else {
-    console.log('Nothing to do this tick.');
+  if (force === 'on' || force === 'off') {
+    console.log(`Forced ${force.toUpperCase()} via workflow_dispatch.`);
+    await flipIfNeeded(force === 'on');
+    return;
   }
+
+  const now = new Date();
+  const { spans } = await upcomingSpans();
+  const current = spans.find((s) => now >= s.on && now < s.off);
+
+  console.log(`Now: ${now.toISOString()} · channel=${path} · ${spans.length} upcoming span(s) computed`);
+  if (current) {
+    console.log(`Currently inside a Shabbos/Yom Tov span: ${current.days.join(', ')} (ON ${current.on.toISOString()} → OFF ${current.off.toISOString()})`);
+  }
+
+  await flipIfNeeded(!!current);
 }
 
 main().catch((e) => {
