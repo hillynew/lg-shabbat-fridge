@@ -1,9 +1,11 @@
 # lg-shabbat-fridge
 
 Turns an LG WiFi refrigerator's **Sabbath mode** on for every **Shabbos and
-Yom Tov** — automatically, for free, with no server to run or pay for. It
-runs entirely on a [GitHub Actions](https://github.com/features/actions)
-schedule in this repo; there's nothing else to host.
+Yom Tov** — automatically, for free, with no server to run or pay for. The
+code runs entirely on [GitHub Actions](https://github.com/features/actions)
+in this repo, triggered by a free external cron ping (see "Reliable
+triggering" below — GitHub's own scheduler isn't precise enough for this);
+there's nothing to host yourself either way.
 
 This was extracted from a larger internal business app it didn't belong in,
 so it could stand on its own as a small, free, personal automation.
@@ -116,12 +118,59 @@ check a few against a Jewish calendar before trusting it live. (Once the
 zip secret is saved to GitHub, the scheduled job reads it the same way;
 this is just a local check.)
 
-### Step 5 — enable Actions and test it
+### Step 5 — test a manual run
 
 Actions are enabled by default on a new repo. Go to the **Actions** tab →
 **Shabbat mode tick** → **Run workflow**, and pick `force: on` or
 `force: off` to test a flip immediately without waiting for Shabbos. Check
 the run's log — it prints exactly what channel it used and what it did.
+
+### Step 6 — set up reliable triggering (required)
+
+**GitHub's own `schedule:` cron trigger is not used** — it's documented to
+be delayed or dropped under load, and in practice on a low-traffic repo a
+`*/15` schedule fires only a small, irregular fraction of its configured
+times (confirmed live: gaps of hours between runs, landing outside the
+intended windows entirely). That's not acceptable for a precise-time
+religious-observance trigger, so this repo relies on an external, free,
+purpose-built cron service instead to call the workflow on schedule — the
+code still runs entirely on GitHub Actions, the external service just
+triggers it reliably.
+
+1. **Create a scoped GitHub token** — go to
+   [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new)
+   (fine-grained token):
+   - Resource owner: your account
+   - Repository access: **Only select repositories** → this repo
+   - Permissions → Repository permissions → **Actions: Read and write**
+   - Set an expiration (fine-grained tokens require one — a year is fine,
+     just re-generate and update the cron job when it expires)
+   - Generate, and copy the token (starts `github_pat_…`) — you won't see
+     it again
+
+2. **Sign up free** at [cron-job.org](https://cron-job.org) (or any similar
+   free HTTP-ping cron service — EasyCron, etc. work the same way).
+
+3. **Create a cron job** that POSTs to GitHub's `workflow_dispatch` API on
+   this schedule (matching the windows the old internal cron used to cover
+   — replicate as two jobs, or one job with an advanced/custom cron
+   expression if the service supports it):
+   - **URL:** `https://api.github.com/repos/hillynew/lg-shabbat-fridge/actions/workflows/shabbat-tick.yml/dispatches`
+   - **Method:** `POST`
+   - **Headers:**
+     - `Authorization: Bearer <your token from step 1>`
+     - `Accept: application/vnd.github+json`
+     - `Content-Type: application/json`
+     - `X-GitHub-Api-Version: 2022-11-28`
+   - **Body:** `{"ref":"main"}`
+   - **Schedule:** every 15 minutes, during:
+     - Midday: `15:00`–`18:59` UTC (covers noon ET under both EDT/EST)
+     - Evening: `21:00`–`02:59` UTC, crossing midnight (covers sunset+60 ET
+       under both DST states across the year at ~26°N)
+
+A successful ping returns HTTP 204 with no body. If you ever want to
+sanity-check it's firing, watch the **Actions** tab — a run should appear
+within a minute or two of each scheduled ping, tagged "workflow_dispatch".
 
 After that, it just runs itself.
 
@@ -156,12 +205,13 @@ similar works fine for a quick local test).
 ## The schedule (`.github/workflows/shabbat-tick.yml`)
 
 Since Yom Tov can fall on any day of the week (not just Friday/Saturday),
-the job runs **every day**, in two narrow daily windows rather than around
-the clock: a midday window (covers the fixed noon ON time under both DST
-states) and an evening window (covers sunset+60 under both DST states,
-padded for the earliest-December to latest-June range at ~26°N). That
-keeps it at roughly 1200 runs/month — comfortably inside GitHub's 2000
-free Actions minutes/month even on a private repo.
+the external pinger (Step 6 above) fires **every day**, in two narrow daily
+windows rather than around the clock: a midday window (covers the fixed
+noon ON time under both DST states) and an evening window (covers
+sunset+60 under both DST states, padded for the earliest-December to
+latest-June range at ~26°N). That keeps it at roughly 1200 runs/month —
+comfortably inside GitHub's 2000 free Actions minutes/month even on a
+private repo.
 
 Making the repo **public** removes any Actions-minutes limit entirely (free
 and unlimited on public repos) if you'd rather not think about it — nothing

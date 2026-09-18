@@ -1,20 +1,22 @@
 name: Shabbat mode tick
 
 on:
-  schedule:
-    # Yom Tov can fall on ANY day of the week (not just Fri/Sat), so this
-    # runs every day, in two narrow daily windows rather than around the
-    # clock — keeps this comfortably inside GitHub's free Actions minutes
-    # even on a private repo (~1200 runs/month at 1 billed minute each).
-    #
-    # Midday window: covers ON time (solar noon, fixed local clock time)
-    # under both EDT (UTC-4) and EST (UTC-5), with margin.
-    - cron: '*/15 15-18 * * *'
-    # Evening window: covers OFF time (sunset + SHABBAT_HAVDALAH_MINUTES)
-    # under both DST states across the whole year at ~26°N (South FL):
-    # earliest ~18:30 ET in December, latest ~21:15 ET in June. Padded and
-    # crosses UTC midnight.
-    - cron: '*/15 21-23,0-2 * * *'
+  # GitHub's own `schedule:` trigger is NOT used here — it's documented to
+  # be delayed/dropped under load, and in practice on a low-traffic repo a
+  # */15 schedule fires only a small, irregular fraction of its configured
+  # times (confirmed live: real gaps of 2-6+ hours between runs, landing
+  # outside the declared windows entirely). That's unacceptable for a
+  # precise-time religious-observance trigger.
+  #
+  # Instead, an external free cron pinger (e.g. cron-job.org) calls this
+  # workflow's `workflow_dispatch` REST API on a real schedule — GitHub
+  # still runs the actual code, the external service just triggers it
+  # reliably. See README.md "Reliable triggering" for setup.
+  #
+  # Target windows to replicate in the external pinger (every 15 min):
+  #   Midday: 15:00-18:59 UTC  (covers noon ET under both EDT/EST, padded)
+  #   Evening: 21:00-02:59 UTC (covers sunset+60 ET under both DST states
+  #            across the year at ~26°N; crosses UTC midnight)
   workflow_dispatch:
     inputs:
       force:
