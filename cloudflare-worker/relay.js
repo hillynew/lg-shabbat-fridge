@@ -50,7 +50,12 @@ export default {
     const fingerprint = `len=${pat.length} start="${pat.slice(0, 14)}" end="${pat.slice(-6)}" hasWhitespace=${/\s/.test(pat)}`;
 
     const force = url.searchParams.get('force') || '';
-    const dispatchUrl = `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches`;
+    // TEMPORARY: echo to httpbin instead of GitHub, to see exactly what this
+    // Worker's fetch() actually sends over the wire (headers can be silently
+    // altered by a runtime). Swap back to the real dispatchUrl once solved.
+    const dispatchUrl = url.searchParams.get('echo') === '1'
+      ? 'https://httpbin.org/anything'
+      : `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches`;
 
     const githubResponse = await fetch(dispatchUrl, {
       method: 'POST',
