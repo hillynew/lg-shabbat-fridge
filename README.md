@@ -1,11 +1,10 @@
 # lg-shabbat-fridge
 
 Turns an LG WiFi refrigerator's **Sabbath mode** on for every **Shabbos and
-Yom Tov** — automatically, for free, with no server to run or pay for. The
-code runs entirely on [GitHub Actions](https://github.com/features/actions)
-in this repo, triggered by a free external cron ping (see "Reliable
-triggering" below — GitHub's own scheduler isn't precise enough for this);
-there's nothing to host yourself either way.
+Yom Tov** — automatically, for free, with no server to run or pay for and
+nothing external to set up. The code runs entirely on
+[GitHub Actions](https://github.com/features/actions) in this repo, on its
+own built-in hourly schedule.
 
 This was extracted from a larger internal business app it didn't belong in,
 so it could stand on its own as a small, free, personal automation.
@@ -53,12 +52,15 @@ the engine just looks at which calendar dates are restricted (every
 Saturday, union every Yom Tov date) and groups consecutive dates together,
 so a 3-day yontif naturally stays on the whole time with no gap.
 
-The scheduled job (`scripts/tick.js`) runs on a cron covering every day of
-the week (Yom Tov isn't only Fri/Sat), fetches the current schedule, and
-converges the fridge to whichever state (ON/OFF) the current moment should
-be in. It's stateless: before flipping, it **reads the fridge's current
-Sabbath state** and no-ops if it's already correct — so a missed run, a
-manual flip, or the job simply running again later is always self-healing.
+The scheduled job (`scripts/tick.js`) runs once an hour, every day of the
+week (Yom Tov isn't only Fri/Sat), fetches the current schedule, then polls
+every few minutes for the rest of the hour so the actual ON/OFF moment
+still gets caught within a few minutes without needing a high-frequency
+external trigger. Each check converges the fridge to whichever state
+(ON/OFF) the current moment should be in. It's stateless: before flipping,
+it **reads the fridge's current Sabbath state** and no-ops if it's already
+correct — so a missed run, a manual flip, or the job simply running again
+later is always self-healing.
 
 ## One-time setup
 
@@ -125,92 +127,8 @@ Actions are enabled by default on a new repo. Go to the **Actions** tab →
 `force: off` to test a flip immediately without waiting for Shabbos. Check
 the run's log — it prints exactly what channel it used and what it did.
 
-### Step 6 — set up reliable triggering (required)
-
-**GitHub's own `schedule:` cron trigger is not used** — it's documented to
-be delayed or dropped under load, and in practice on a low-traffic repo a
-`*/15` schedule fires only a small, irregular fraction of its configured
-times (confirmed live: gaps of hours between runs, landing outside the
-intended windows entirely). That's not acceptable for a precise-time
-religious-observance trigger, so this repo relies on an external, free,
-purpose-built cron service instead to call the workflow on schedule — the
-code still runs entirely on GitHub Actions, the external service just
-triggers it reliably.
-
-**Known issue: cron-job.org calling GitHub directly gets a 404.** Confirmed
-live — the URL, headers, token, and body were all byte-verified correct
-(the exact same request via plain `curl` succeeds with 204), yet cron-job.org's
-own calls to `api.github.com` consistently 404, on both manual test runs and
-real scheduled executions. Every likely self-inflicted cause was ruled out.
-That leaves GitHub/Fastly quietly blocking cron-job.org's shared IP pool or
-its self-identifying `User-Agent: ...cron-job.org...` — a known pattern where
-GitHub serves a misleading 404 instead of an honest 403 for this kind of
-block, so as not to confirm what it's blocking. **Fix: don't call GitHub
-directly from cron-job.org — relay through a small Cloudflare Worker
-(free, no server to maintain) that makes the real call server-side,** which
-looks like an ordinary SaaS-to-GitHub integration instead of a cron pinger.
-
-1. **Create a scoped GitHub token** — go to
-   [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new)
-   (fine-grained token):
-   - Resource owner: your account
-   - Repository access: **Only select repositories** → this repo
-   - Permissions → Repository permissions → **Actions: Read and write**
-   - Set an expiration (fine-grained tokens require one — a year is fine,
-     just re-generate and update the Worker secret when it expires)
-   - Generate, and copy the token (starts `github_pat_…`) — you won't see
-     it again
-
-2. **Deploy the relay Worker** (free Cloudflare account, dashboard only —
-   no CLI, no `wrangler` install):
-   - Sign up free at [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up)
-   - Left sidebar → **Workers & Pages** → **Create** → **Create Worker** →
-     give it any name (e.g. `lg-shabbat-relay`) → **Deploy** (deploys the
-     default "Hello World" template — you'll replace it next)
-   - Click **Edit code** → delete everything in the editor → paste in the
-     full contents of [`cloudflare-worker/relay.js`](cloudflare-worker/relay.js)
-     from this repo → **Deploy**
-   - Back on the Worker's page → **Settings → Variables and Secrets** →
-     **Add** two secrets (toggle "Encrypt" on for both):
-     - `GITHUB_PAT` = the token from step 1
-     - `RELAY_SECRET` = any random string you make up (this replaces the
-       GitHub token as the thing cron-job.org authenticates with — pick
-       something like a 20+ character password, it never needs to be typed
-       by hand)
-   - Copy the Worker's URL from the top of its page — looks like
-     `https://lg-shabbat-relay.<your-subdomain>.workers.dev`
-
-3. **Sign up free** at [cron-job.org](https://cron-job.org) (or any similar
-   free HTTP-ping cron service).
-
-4. **Create a cron job** that POSTs to your Worker (not GitHub) on this
-   schedule:
-   - **URL:** `https://lg-shabbat-relay.<your-subdomain>.workers.dev`
-   - **Method:** `POST`
-   - **Headers:**
-     - `X-Relay-Secret: <the RELAY_SECRET you made up in step 2>`
-   - **Schedule:** every 15 minutes, during:
-     - Midday: `15:00`–`18:59` UTC (covers noon ET under both EDT/EST)
-     - Evening: `21:00`–`02:59` UTC, crossing midnight (covers sunset+60 ET
-       under both DST states across the year at ~26°N)
-
-A successful ping returns HTTP 200 with a body like `GitHub responded 204
-(no body — this is the expected success response)`. A wrong or missing
-`X-Relay-Secret` gets a 404 (indistinguishable from a route that doesn't
-exist, on purpose). If you ever want to sanity-check it's firing, watch the
-**Actions** tab on this repo — a run should appear within a minute or two of
-each scheduled ping, tagged "workflow_dispatch".
-
-To force an immediate flip through the Worker without waiting for the
-schedule (handy for testing from anywhere, e.g. a phone browser), add
-`?force=on` or `?force=off` to the Worker URL and hit it with the same
-`X-Relay-Secret` header.
-
-After that, it just runs itself. (If you'd rather skip the Worker and try
-cron-job.org → GitHub directly first, the old direct setup is still valid
-config-wise — it's specifically cron-job.org's requests that GitHub seems to
-reject, so it may work fine from a different pinger's IP range. The Worker
-is the version confirmed to sidestep the problem.)
+That's it — nothing else to set up. The workflow's own `schedule:` trigger
+(once an hour, see below) takes it from here.
 
 ## The controller
 
@@ -242,19 +160,45 @@ similar works fine for a quick local test).
 
 ## The schedule (`.github/workflows/shabbat-tick.yml`)
 
-Since Yom Tov can fall on any day of the week (not just Friday/Saturday),
-the external pinger (Step 6 above) fires **every day**, in two narrow daily
-windows rather than around the clock: a midday window (covers the fixed
-noon ON time under both DST states) and an evening window (covers
-sunset+60 under both DST states, padded for the earliest-December to
-latest-June range at ~26°N). That keeps it at roughly 1200 runs/month —
-comfortably inside GitHub's 2000 free Actions minutes/month even on a
-private repo.
+`schedule: '7 * * * *'` — once an hour, at 7 minutes past, every day of the
+week (Yom Tov can fall on any weekday, not just Friday/Saturday). The `:07`
+offset is deliberate: GitHub's docs warn that the top of every hour (`:00`)
+is when its scheduler is most congested, since that's when everyone else's
+cron jobs fire too — an earlier, much higher-frequency (`*/15`) schedule
+was confirmed live to fire only a small, irregular fraction of its
+configured times because of this. Hourly, off the round hour, is a
+well-established reliable pattern.
 
-Making the repo **public** removes any Actions-minutes limit entirely (free
-and unlimited on public repos) if you'd rather not think about it — nothing
-sensitive is ever committed to the repo itself, only referenced via GitHub
-Secrets (which are encrypted at rest and never printed in logs).
+Each hourly run then polls internally every 3 minutes for up to 55 minutes
+(`scripts/tick.js`), so the real ON/OFF moment still gets caught within a
+few minutes, entirely within that one job — no second trigger needed.
+
+At roughly 24 runs/day × ~55 minutes each, this uses well over GitHub's
+2000 free Actions minutes/month on a **private** repo. Making the repo
+**public** removes any Actions-minutes limit entirely (free and unlimited
+on public repos) — nothing sensitive is ever committed to the repo itself,
+only referenced via GitHub Secrets (encrypted at rest, never printed in
+logs). **This repo needs to be public for the schedule to run for free** —
+if you'd rather keep it private, either upgrade past the free Actions
+minutes or shorten `RUN_BUDGET_MS` in `scripts/tick.js` at the cost of
+coarser timing.
+
+### Why not an external trigger?
+
+Two earlier approaches were tried and abandoned: pinging GitHub's
+`workflow_dispatch` REST API every few minutes from
+[cron-job.org](https://cron-job.org), then from a small Cloudflare Worker
+relay when that got blocked. Both consistently got `404 Not Found` from
+`api.github.com` that was never fully explained — URL, headers, token, and
+body were all byte-verified correct, and the exact same request succeeded
+reliably via a plain server-side `curl` every time. The leading theory,
+confirmed for the Worker case by inspecting the literal outbound request:
+GitHub deprioritizes or blocks traffic whose origin self-identifies as
+coming from an edge/serverless network (cron-job.org's own declared bot
+User-Agent; Cloudflare Workers' automatic `Cf-Worker`/`Cdn-Loop` fingerprint
+headers). Running everything inside one hourly GitHub Actions job sidesteps
+the whole problem — nothing outside GitHub's own infrastructure ever calls
+GitHub's API.
 
 ## Security notes
 

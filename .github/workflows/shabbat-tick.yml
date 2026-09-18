@@ -1,22 +1,26 @@
 name: Shabbat mode tick
 
 on:
-  # GitHub's own `schedule:` trigger is NOT used here — it's documented to
-  # be delayed/dropped under load, and in practice on a low-traffic repo a
-  # */15 schedule fires only a small, irregular fraction of its configured
-  # times (confirmed live: real gaps of 2-6+ hours between runs, landing
-  # outside the declared windows entirely). That's unacceptable for a
-  # precise-time religious-observance trigger.
+  # Runs once an hour, offset to :07 rather than :00 — GitHub's own docs
+  # warn that the top of every hour is when its scheduler is most congested
+  # (everyone else's cron fires there too), which is the actual cause of
+  # the unreliability seen with a high-frequency `*/15` schedule tried
+  # earlier (confirmed live: gaps of 2-6+ hours between runs). Hourly, off
+  # the round hour, is a well-established reliable pattern.
   #
-  # Instead, an external free cron pinger (e.g. cron-job.org) calls this
-  # workflow's `workflow_dispatch` REST API on a real schedule — GitHub
-  # still runs the actual code, the external service just triggers it
-  # reliably. See README.md "Reliable triggering" for setup.
-  #
-  # Target windows to replicate in the external pinger (every 15 min):
-  #   Midday: 15:00-18:59 UTC  (covers noon ET under both EDT/EST, padded)
-  #   Evening: 21:00-02:59 UTC (covers sunset+60 ET under both DST states
-  #            across the year at ~26°N; crosses UTC midnight)
+  # Precision comes from scripts/tick.js itself: each hourly run polls
+  # internally every few minutes for the rest of the hour, so the actual
+  # ON/OFF moment still gets caught within a few minutes. Two earlier
+  # external-trigger approaches (cron-job.org, then a Cloudflare Worker
+  # relay calling GitHub's workflow_dispatch API every few minutes) were
+  # abandoned after both consistently got 404s from GitHub that were never
+  # explained — the identical request succeeded via plain curl every time,
+  # pointing at GitHub deprioritizing traffic that self-identifies as
+  # coming from an edge/serverless network. This design needs no external
+  # caller at all: nothing outside GitHub Actions' own infrastructure ever
+  # talks to GitHub's API.
+  schedule:
+    - cron: '7 * * * *'
   workflow_dispatch:
     inputs:
       force:
@@ -32,6 +36,7 @@ on:
 jobs:
   tick:
     runs-on: ubuntu-latest
+    timeout-minutes: 58
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
