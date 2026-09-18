@@ -137,6 +137,19 @@ purpose-built cron service instead to call the workflow on schedule — the
 code still runs entirely on GitHub Actions, the external service just
 triggers it reliably.
 
+**Known issue: cron-job.org calling GitHub directly gets a 404.** Confirmed
+live — the URL, headers, token, and body were all byte-verified correct
+(the exact same request via plain `curl` succeeds with 204), yet cron-job.org's
+own calls to `api.github.com` consistently 404, on both manual test runs and
+real scheduled executions. Every likely self-inflicted cause was ruled out.
+That leaves GitHub/Fastly quietly blocking cron-job.org's shared IP pool or
+its self-identifying `User-Agent: ...cron-job.org...` — a known pattern where
+GitHub serves a misleading 404 instead of an honest 403 for this kind of
+block, so as not to confirm what it's blocking. **Fix: don't call GitHub
+directly from cron-job.org — relay through a small Cloudflare Worker
+(free, no server to maintain) that makes the real call server-side,** which
+looks like an ordinary SaaS-to-GitHub integration instead of a cron pinger.
+
 1. **Create a scoped GitHub token** — go to
    [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new)
    (fine-grained token):
@@ -144,35 +157,60 @@ triggers it reliably.
    - Repository access: **Only select repositories** → this repo
    - Permissions → Repository permissions → **Actions: Read and write**
    - Set an expiration (fine-grained tokens require one — a year is fine,
-     just re-generate and update the cron job when it expires)
+     just re-generate and update the Worker secret when it expires)
    - Generate, and copy the token (starts `github_pat_…`) — you won't see
      it again
 
-2. **Sign up free** at [cron-job.org](https://cron-job.org) (or any similar
-   free HTTP-ping cron service — EasyCron, etc. work the same way).
+2. **Deploy the relay Worker** (free Cloudflare account, dashboard only —
+   no CLI, no `wrangler` install):
+   - Sign up free at [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up)
+   - Left sidebar → **Workers & Pages** → **Create** → **Create Worker** →
+     give it any name (e.g. `lg-shabbat-relay`) → **Deploy** (deploys the
+     default "Hello World" template — you'll replace it next)
+   - Click **Edit code** → delete everything in the editor → paste in the
+     full contents of [`cloudflare-worker/relay.js`](cloudflare-worker/relay.js)
+     from this repo → **Deploy**
+   - Back on the Worker's page → **Settings → Variables and Secrets** →
+     **Add** two secrets (toggle "Encrypt" on for both):
+     - `GITHUB_PAT` = the token from step 1
+     - `RELAY_SECRET` = any random string you make up (this replaces the
+       GitHub token as the thing cron-job.org authenticates with — pick
+       something like a 20+ character password, it never needs to be typed
+       by hand)
+   - Copy the Worker's URL from the top of its page — looks like
+     `https://lg-shabbat-relay.<your-subdomain>.workers.dev`
 
-3. **Create a cron job** that POSTs to GitHub's `workflow_dispatch` API on
-   this schedule (matching the windows the old internal cron used to cover
-   — replicate as two jobs, or one job with an advanced/custom cron
-   expression if the service supports it):
-   - **URL:** `https://api.github.com/repos/hillynew/lg-shabbat-fridge/actions/workflows/shabbat-tick.yml/dispatches`
+3. **Sign up free** at [cron-job.org](https://cron-job.org) (or any similar
+   free HTTP-ping cron service).
+
+4. **Create a cron job** that POSTs to your Worker (not GitHub) on this
+   schedule:
+   - **URL:** `https://lg-shabbat-relay.<your-subdomain>.workers.dev`
    - **Method:** `POST`
    - **Headers:**
-     - `Authorization: Bearer <your token from step 1>`
-     - `Accept: application/vnd.github+json`
-     - `Content-Type: application/json`
-     - `X-GitHub-Api-Version: 2022-11-28`
-   - **Body:** `{"ref":"main"}`
+     - `X-Relay-Secret: <the RELAY_SECRET you made up in step 2>`
    - **Schedule:** every 15 minutes, during:
      - Midday: `15:00`–`18:59` UTC (covers noon ET under both EDT/EST)
      - Evening: `21:00`–`02:59` UTC, crossing midnight (covers sunset+60 ET
        under both DST states across the year at ~26°N)
 
-A successful ping returns HTTP 204 with no body. If you ever want to
-sanity-check it's firing, watch the **Actions** tab — a run should appear
-within a minute or two of each scheduled ping, tagged "workflow_dispatch".
+A successful ping returns HTTP 200 with a body like `GitHub responded 204
+(no body — this is the expected success response)`. A wrong or missing
+`X-Relay-Secret` gets a 404 (indistinguishable from a route that doesn't
+exist, on purpose). If you ever want to sanity-check it's firing, watch the
+**Actions** tab on this repo — a run should appear within a minute or two of
+each scheduled ping, tagged "workflow_dispatch".
 
-After that, it just runs itself.
+To force an immediate flip through the Worker without waiting for the
+schedule (handy for testing from anywhere, e.g. a phone browser), add
+`?force=on` or `?force=off` to the Worker URL and hit it with the same
+`X-Relay-Secret` header.
+
+After that, it just runs itself. (If you'd rather skip the Worker and try
+cron-job.org → GitHub directly first, the old direct setup is still valid
+config-wise — it's specifically cron-job.org's requests that GitHub seems to
+reject, so it may work fine from a different pinger's IP range. The Worker
+is the version confirmed to sidestep the problem.)
 
 ## The controller
 
