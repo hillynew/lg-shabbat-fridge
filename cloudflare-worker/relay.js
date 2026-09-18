@@ -42,6 +42,13 @@ export default {
       return new Response('Worker is missing its GITHUB_PAT secret', { status: 500 });
     }
 
+    // TEMPORARY DIAGNOSTIC: a partial fingerprint of the stored token (never
+    // the full value) so we can confirm what's actually stored vs. what was
+    // meant to be pasted, without exposing the real secret. Remove once the
+    // 404 mystery is solved.
+    const pat = env.GITHUB_PAT;
+    const fingerprint = `len=${pat.length} start="${pat.slice(0, 14)}" end="${pat.slice(-6)}" hasWhitespace=${/\s/.test(pat)}`;
+
     const force = url.searchParams.get('force') || '';
     const dispatchUrl = `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/${WORKFLOW_FILE}/dispatches`;
 
@@ -63,7 +70,7 @@ export default {
 
     const body = await githubResponse.text();
     return new Response(
-      `GitHub responded ${githubResponse.status}${body ? `: ${body}` : ' (no body — this is the expected success response)'}`,
+      `GitHub responded ${githubResponse.status}${body ? `: ${body}` : ' (no body — this is the expected success response)'}\n\nDIAGNOSTIC token fingerprint: ${fingerprint}`,
       { status: githubResponse.status === 204 ? 200 : githubResponse.status },
     );
   },
