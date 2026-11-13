@@ -42,7 +42,7 @@ jobs:
           class SafeError extends Error {}
           const fail = code => { throw new SafeError(code); };
           
-          // No LG authentication or appliance requests, dependencies, files, or secret output.
+          // No LG requests, dependencies, files, or secret output.
           // Only this exact existing Worker may receive the six configured values.
           async function provision(env, request = fetch) {
             if (!/^[a-f0-9]{40}$/.test(env.APPROVED_HEAD || '') || env.ACTUAL_HEAD !== env.APPROVED_HEAD) fail('provisioning_commit_not_approved');
@@ -61,40 +61,11 @@ jobs:
               if (url.protocol !== 'https:') fail('lg_oauth_requires_https');
               if (url.username || url.password || url.search || url.hash) fail('lg_oauth_contains_disallowed_url_parts');
               if (url.hostname === 'us.lgeapi.com') {
-                // This additional exact host is accepted only when LG's trusted
-                // HTTPS gateway confirms it. This public request uses no secrets.
+                // Existing US login-backend origin. LG's public gateway omits OAuth
+                // fields, so discovery cannot validate it. Permit only this exact
+                // HTTPS root for storage; the held Worker still cannot contact LG.
+                // See nVuln/homebridge-lg-thinq#96 and ollo69/ha-smartthinq-sensors#387.
                 if (url.port || url.pathname !== '/') fail('lg_oauth_unexpected_origin_or_path');
-                let gateway;
-                try {
-                  const response = await request('https://route.lgthinq.com:46030/v1/service/application/gateway-uri', {
-                    method: 'GET', redirect: 'error', signal: AbortSignal.timeout(10000),
-                    headers: { Accept: 'application/json', 'Content-Type': 'application/json;charset=UTF-8',
-                      'x-api-key': 'VGhpblEyLjAgU0VSVklDRQ==', 'x-client-id': 'c713ea8e50f657534ff8b9d373dfebfc2ed70b88285c26b8ade49868c0b164d9',
-                      'x-country-code': 'US', 'x-language-code': 'en-US', 'x-message-id': crypto.randomUUID(),
-                      'x-service-code': 'SVC202', 'x-service-phase': 'OP', 'x-thinq-app-level': 'PRD',
-                      'x-thinq-app-os': 'ANDROID', 'x-thinq-app-type': 'NUTS', 'x-thinq-app-ver': '5.0.1200' },
-                  });
-                  if (!response.ok) fail('lg_gateway_request_rejected');
-                  const body = await response.text();
-                  if (Buffer.byteLength(body) > 16384) fail('lg_gateway_response_oversized');
-                  gateway = JSON.parse(body);
-                } catch (error) {
-                  if (error instanceof SafeError) throw error;
-                  fail('lg_gateway_validation_failed');
-                }
-                if (gateway?.resultCode !== '0000') fail('lg_gateway_validation_failed');
-                const confirmsOrigin = [gateway.result?.empOauthBaseUri, gateway.result?.oauthUri].some(value => {
-                  if (typeof value !== 'string') return false;
-                  try {
-                    const discovered = new URL(value);
-                    return discovered.protocol === 'https:' && !discovered.username && !discovered.password && !discovered.search && !discovered.hash && discovered.origin === url.origin;
-                  } catch { return false; }
-                });
-                if (!confirmsOrigin) {
-                  const publicOrigin = value => { try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password ? u.origin : 'not_https_url'; } catch { return 'absent_or_invalid'; } };
-                  console.log(JSON.stringify({ public_lg_discovery: { fields: Object.keys(gateway.result || {}).filter(k => /^[A-Za-z0-9_]{1,50}$/.test(k)), empOauthBaseUri: publicOrigin(gateway.result?.empOauthBaseUri), oauthUri: publicOrigin(gateway.result?.oauthUri) } }));
-                  fail('lg_gateway_oauth_mismatch');
-                }
               } else if (!['lgthinq.com', 'lge.com', 'lgecloud.com', 'lgaccount.com'].some(d => url.hostname === d || url.hostname.endsWith('.' + d))) {
                 fail('lg_oauth_unrecognized_domain');
               }
