@@ -80,11 +80,12 @@ jobs:
           };
           try {
             if (process.env.GITHUB_RUN_ATTEMPT !== '1') throw new Error('rerun_not_authorized');
-            const result = await turnOnOnce({client:createLG(process.env,request),expiresAt});
+            const result = await turnOnOnce({client:createLG(process.env,request,message=>{ const event=JSON.parse(message); if(event.event==='lg_request_failed') console.log(message); }),expiresAt});
             console.log(result.attempted ? 'One-time ON command verified by a newer LG snapshot.' : 'LG already reports ON; no command sent.');
           } catch (error) {
-            const allowed=['authorization_expired','initial_state_unknown_or_stale','command_not_verified_do_not_retry','rerun_not_authorized'];
-            console.error(allowed.includes(error?.message) ? error.message : 'one_time_control_failed');
+            const allowed=['authorization_expired','initial_state_unknown_or_stale','command_not_verified_do_not_retry','rerun_not_authorized','lg_config_missing','lg_control_invalid','lg_host_invalid','lg_response_error','lg_auth_failed','lg_gateway_request_failed','lg_token_request_failed','lg_dashboard_request_failed','lg_write_request_failed'];
+            console.log(JSON.stringify({controlRequests}));
+          console.error(allowed.includes(error?.message) ? error.message : 'one_time_control_failed');
             process.exitCode=1;
           }
           NODE
