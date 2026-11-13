@@ -76,7 +76,17 @@ jobs:
             if (options.method === 'POST' && new URL(url).pathname.endsWith('/control-sync')) {
               if (++controlRequests > 1 || Date.now() >= expiresAt) throw new Error('additional_control_request_blocked');
             }
-            return requestJson(url,options);
+            return requestJson(url,options,async(target,init)=>{
+              const response=await fetch(target,init);
+              if(response.status===400 && new URL(target).pathname.endsWith('/service/application/dashboard')){
+                try {
+                  const data=await response.clone().json();
+                  const code=String(data?.resultCode ?? '');
+                  console.log(JSON.stringify({event:'lg_dashboard_rejected',httpStatus:400,lgCode:/^\d{4}$/.test(code)?code:'unknown'}));
+                } catch {}
+              }
+              return response;
+            });
           };
           try {
             if (process.env.GITHUB_RUN_ATTEMPT !== '1') throw new Error('rerun_not_authorized');
