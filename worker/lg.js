@@ -13,6 +13,13 @@ function lgURL(value) {
   if (url.search || url.hash) throw new Error('lg_host_invalid');
   return url.toString().replace(/\/$/, '');
 }
+function oauthURL(value) {
+  const url = new URL(value);
+  if (url.hostname !== 'us.lgeapi.com') return lgURL(value);
+  if (url.protocol !== 'https:' || url.port || url.pathname !== '/'
+      || url.username || url.password || url.search || url.hash) throw new Error('lg_host_invalid');
+  return url.origin;
+}
 function unwrap(json) {
   if (json?.resultCode !== '0000') {
     const error = new Error('lg_response_error');
@@ -21,11 +28,11 @@ function unwrap(json) {
   }
   return json.result;
 }
-export function createLG(env, request = requestJson) {
+export function createLG(env, request = requestJson, observe = () => {}) {
   for (const key of ['THINQ_V2_REFRESH_TOKEN', 'THINQ_V2_OAUTH_URL', 'THINQ_V2_USER_NUMBER', 'THINQ_V2_DEVICE_ID', 'THINQ_V2_CLIENT_ID', 'THINQ_V2_SABBATH_CTRL']) {
     if (!env[key]) throw new Error('lg_config_missing');
   }
-  const oauth = lgURL(env.THINQ_V2_OAUTH_URL);
+  const oauth = oauthURL(env.THINQ_V2_OAUTH_URL);
   const spec = JSON.parse(env.THINQ_V2_SABBATH_CTRL);
   const ctrl = spec?.ctrl;
   if (!spec?.controllable || spec.onValue == null || spec.offValue == null || spec.onValue === spec.offValue
@@ -39,13 +46,17 @@ export function createLG(env, request = requestJson) {
     'x-country-code': 'US', 'x-language-code': 'en-US', 'x-message-id': randomUUID(),
     'x-service-code': 'SVC202', 'x-service-phase': 'OP', 'x-thinq-app-level': 'PRD',
     'x-thinq-app-os': 'ANDROID', 'x-thinq-app-type': 'NUTS', 'x-thinq-app-ver': '5.0.1200' });
+  async function stageRequest(stage, url, options) {
+    try { return await request(url, options); }
+    catch { throw new Error('lg_' + stage + '_request_failed'); }
+  }
   async function connect() {
     if (session) return session;
-    const gateway = unwrap(await request(gatewayURL, { headers: headers() }));
+    const gateway = unwrap(await stageRequest('gateway', gatewayURL, { headers: headers() }));
     const base = lgURL(gateway.thinq2Uri);
     const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: env.THINQ_V2_REFRESH_TOKEN }).toString();
     const date = new Date().toUTCString().replace('GMT', '+0000');
-    const token = await request(oauth + authPath, { method: 'POST', body, headers: {
+    const token = await stageRequest('token', oauth + authPath, { method: 'POST', body, headers: {
       Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded',
       'x-lge-appkey': publicAppKey, 'x-lge-oauth-date': date,
       'x-lge-oauth-signature': createHmac('sha1', publicSigningKey).update(`${authPath}?${body}\n${date}`).digest('base64'),
@@ -56,7 +67,7 @@ export function createLG(env, request = requestJson) {
   }
   async function api(path, payload, rotated = false) {
     const { base, token } = await connect();
-    try { return unwrap(await request(`${base}/${path}`,  { method: payload ? 'POST' : 'GET',
+    try { return unwrap(await stageRequest(payload ? 'write' : 'dashboard', `${base}/${path}`,  { method: payload ? 'POST' : 'GET',
       headers: { ...headers(), 'x-emp-token': token, 'x-user-no': env.THINQ_V2_USER_NUMBER,
         ...(payload ? { 'x-thinq-security-key': 'nuts_securitykey' } : {}) },
       ...(payload ? { body: JSON.stringify(payload) } : {}) }));
@@ -76,6 +87,11 @@ export function createLG(env, request = requestJson) {
       const value = device?.snapshot?.refState?.sabbathMode;
       const rawTime = device?.snapshot?.timestamp;
       const updatedAt = typeof rawTime === 'number' ? rawTime : typeof rawTime === 'string' ? Date.parse(rawTime) : NaN;
+      observe(JSON.stringify({ event: 'lg_read_metadata', deviceFound: !!device,
+        onlineType: typeof device?.online, online: device?.online === true,
+        modeType: typeof value, mode: value === spec.onValue ? 'on' : value === spec.offValue ? 'off' : 'unknown',
+        timestampType: typeof rawTime, timestampValid: Number.isFinite(updatedAt),
+        ageMs: Number.isFinite(updatedAt) ? Date.now() - updatedAt : null }));
       return { on: value === spec.onValue ? true : value === spec.offValue ? false : null,
         online: device?.online === true, updatedAt };
     },
