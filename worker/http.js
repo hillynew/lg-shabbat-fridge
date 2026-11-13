@@ -1,11 +1,22 @@
-// Timer stays active through body consumption. Response bodies and URLs never enter errors.
+// Timer stays active through body consumption. Never follow credential redirects.
 export async function requestJson(url, options = {}, fetcher = fetch, timeoutMs = 8000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let kind = 'transport', httpStatus = null;
   try {
-    const response = await fetcher(url, { ...options, signal: controller.signal, redirect: 'error' });
-    if (!response.ok) throw new Error('upstream_http_error');
+    // Workers supports manual/follow, not redirect:error. Reject all non-2xx below.
+    const response = await fetcher(url, { ...options, signal: controller.signal, redirect: 'manual' });
+    if (!response.ok) {
+      kind = 'http';
+      httpStatus = Number.isInteger(response.status) ? response.status : null;
+      throw new Error('upstream_http_error');
+    }
+    kind = 'body';
     return await response.json();
-  } catch { throw new Error('upstream_request_failed'); }
-  finally { clearTimeout(timeout); }
+  } catch {
+    const error = new Error('upstream_request_failed');
+    error.kind = controller.signal.aborted ? 'timeout' : kind;
+    error.httpStatus = httpStatus;
+    throw error;
+  } finally { clearTimeout(timeout); }
 }
