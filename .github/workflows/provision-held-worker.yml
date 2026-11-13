@@ -1,0 +1,124 @@
+# One-time, explicitly approved credential migration. No appliance commands.
+# Add the exact reviewed head to SHABBAT_PROVISION_APPROVED_HEAD, install a
+# short-lived CF_HELD_PROVISION_TOKEN, then apply provision-held-worker to PR #1.
+# Remove the token immediately after verification. This workflow is temporary.
+name: Provision held Worker secrets
+on:
+  pull_request:
+    types: [labeled]
+permissions: {}
+concurrency:
+  group: held-worker-secret-provision
+  cancel-in-progress: false
+jobs:
+  provision:
+    if: >-
+      github.repository == 'hillynew/lg-shabbat-fridge' &&
+      github.actor == 'hillynew' &&
+      github.event.number == 1 &&
+      github.event.label.name == 'provision-held-worker' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'feat/free-worker-shadow'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Transfer only into the verified held Worker
+        shell: bash
+        env:
+          APPROVED_HEAD: ${{ vars.SHABBAT_PROVISION_APPROVED_HEAD }}
+          ACTUAL_HEAD: ${{ github.event.pull_request.head.sha }}
+          CF_HELD_PROVISION_TOKEN: ${{ secrets.CF_HELD_PROVISION_TOKEN }}
+          THINQ_V2_REFRESH_TOKEN: ${{ secrets.THINQ_V2_REFRESH_TOKEN }}
+          THINQ_V2_OAUTH_URL: ${{ secrets.THINQ_V2_OAUTH_URL }}
+          THINQ_V2_USER_NUMBER: ${{ secrets.THINQ_V2_USER_NUMBER }}
+          THINQ_V2_CLIENT_ID: ${{ secrets.THINQ_V2_CLIENT_ID }}
+          THINQ_V2_DEVICE_ID: ${{ secrets.THINQ_V2_DEVICE_ID }}
+          THINQ_V2_SABBATH_CTRL: ${{ secrets.THINQ_V2_SABBATH_CTRL }}
+        run: |
+          node --input-type=module <<'NODE'
+          const names = ['REFRESH_TOKEN', 'OAUTH_URL', 'USER_NUMBER', 'CLIENT_ID', 'DEVICE_ID', 'SABBATH_CTRL'].map(x => `THINQ_V2_${x}`);
+          const expectedVersion = 'ecd7a613-bdbb-4ded-9945-7a37110b9a59';
+          const base = 'https://api.cloudflare.com/client/v4/accounts/0dd4affe020da80c4c30990a3f53ebd3/workers/scripts/lg-shabbat-fridge';
+          class SafeError extends Error {}
+          const fail = code => { throw new SafeError(code); };
+          
+          // No LG requests, checked-out code, dependencies, files, or secret output.
+          // Only this exact existing Worker may receive the six configured values.
+          async function provision(env, request = fetch) {
+            if (!/^[a-f0-9]{40}$/.test(env.APPROVED_HEAD || '') || env.ACTUAL_HEAD !== env.APPROVED_HEAD) fail('provisioning_commit_not_approved');
+            const token = env.CF_HELD_PROVISION_TOKEN;
+            if (!token || !/^[A-Za-z0-9_-]{20,200}$/.test(token)) fail('provision_token_missing_or_invalid');
+            const secrets = {};
+            for (const name of names) {
+              const text = env[name];
+              if (typeof text !== 'string' || !text.trim() || Buffer.byteLength(text) > 5000) fail('lg_configuration_missing_or_oversized');
+              secrets[name] = { name, type: 'secret_text', text };
+            }
+            try {
+              const spec = JSON.parse(env.THINQ_V2_SABBATH_CTRL);
+              if (spec?.controllable !== true || !spec.ctrl || spec.onValue == null || spec.offValue == null || spec.onValue === spec.offValue) fail('lg_control_invalid');
+              const url = new URL(env.THINQ_V2_OAUTH_URL);
+              if (url.protocol !== 'https:' || url.username || url.password || !['lgthinq.com', 'lgecloud.com', 'lgaccount.com'].some(d => url.hostname === d || url.hostname.endsWith('.' + d))) fail('lg_oauth_host_invalid');
+            } catch (error) {
+              if (error instanceof SafeError) throw error;
+              fail('lg_configuration_invalid');
+            }
+          
+            async function api(path, method = 'GET', payload) {
+              if (!['/settings', '/deployments', '/secrets', '/secrets-bulk'].includes(path) || (method !== 'GET' && !(method === 'PATCH' && path === '/secrets-bulk'))) fail('request_not_allowed');
+              let response;
+              try {
+                response = await request(base + path, {
+                  method,
+                  headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                  redirect: 'error',
+                  signal: AbortSignal.timeout(10000),
+                  ...(payload ? { body: JSON.stringify(payload) } : {}),
+                });
+              } catch { fail('cloudflare_request_failed'); }
+              if (!response.ok) fail('cloudflare_request_rejected');
+              let data;
+              try { data = await response.json(); } catch { fail('cloudflare_response_invalid'); }
+              if (data?.success !== true) fail('cloudflare_request_rejected');
+              return data.result;
+            }
+          
+            function assertHeld(settings) {
+              if (!Array.isArray(settings?.bindings)) fail('worker_settings_invalid');
+              for (const [name, text] of Object.entries({ SHABBAT_HOLD: 'true', SHABBAT_WORKER_WRITES: 'false', SHABBAT_WRITER: 'github' })) {
+                const found = settings.bindings.filter(b => b.name === name);
+                if (found.length !== 1 || found[0].type !== 'plain_text' || found[0].text !== text) fail('worker_not_safely_held');
+              }
+              for (const name of ['SHABBAT_SCHEDULE_JSON', 'SHABBAT_SCHEDULE_SHA256']) {
+                if (!settings.bindings.some(b => b.name === name && b.type === 'secret_text')) fail('calendar_secrets_missing');
+              }
+              if (settings.compatibility_date !== '2026-11-01' || !settings.compatibility_flags?.includes('nodejs_compat')) fail('worker_runtime_changed');
+            }
+          
+            const deployments = (await api('/deployments'))?.deployments;
+            if (!Array.isArray(deployments) || deployments.length === 0 || deployments.some(d => !Number.isFinite(Date.parse(d.created_on)))) fail('deployment_metadata_invalid');
+            const latest = [...deployments].sort((a, b) => Date.parse(b.created_on) - Date.parse(a.created_on))[0];
+            if (latest.versions?.length !== 1 || latest.versions[0].version_id !== expectedVersion || latest.versions[0].percentage !== 100) fail('deployed_version_changed');
+            const before = await api('/settings');
+            assertHeld(before);
+            if (before.bindings.some(b => names.includes(b.name))) fail('lg_secrets_already_present');
+          
+            // A single merge-patch changes only these six secrets, preserving the
+            // calendar, code, hold, writer, and writes-disabled configuration.
+            // Do not retry an uncertain mutation automatically.
+            await api('/secrets-bulk', 'PATCH', { secrets });
+            const after = await api('/settings');
+            assertHeld(after);
+            if (names.some(name => !after.bindings.some(b => b.name === name && b.type === 'secret_text'))) fail('secret_metadata_unverified');
+            return { status: 'provisioned_while_held', secrets: names.length };
+          }
+          
+          try {
+            const result = await provision(process.env);
+            console.log(JSON.stringify(result));
+          } catch (error) {
+            // Print only our fixed codes, never provider responses or raw exceptions.
+            console.error(error instanceof SafeError ? error.message : 'unexpected_provisioning_failure');
+            process.exitCode = 1;
+          }
+          NODE
