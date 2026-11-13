@@ -58,7 +58,14 @@ jobs:
               const spec = JSON.parse(env.THINQ_V2_SABBATH_CTRL);
               if (spec?.controllable !== true || !spec.ctrl || spec.onValue == null || spec.offValue == null || spec.onValue === spec.offValue) fail('lg_control_invalid');
               const url = new URL(env.THINQ_V2_OAUTH_URL);
-              if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !['lgthinq.com', 'lge.com', 'lgecloud.com', 'lgaccount.com'].some(d => url.hostname === d || url.hostname.endsWith('.' + d))) fail('lg_oauth_host_invalid');
+              if (url.protocol !== 'https:') fail('lg_oauth_requires_https');
+              if (url.username || url.password || url.search || url.hash) fail('lg_oauth_contains_disallowed_url_parts');
+              if (!['lgthinq.com', 'lge.com', 'lgecloud.com', 'lgaccount.com'].some(d => url.hostname === d || url.hostname.endsWith('.' + d))) {
+                // Fixed diagnostic codes only; never print the configured URL.
+                if (url.hostname === 'us.lgeapi.com') fail('lg_oauth_unreviewed_us_lgeapi_com');
+                if (url.hostname === 'us.emp.lgsmartplatform.com') fail('lg_oauth_unreviewed_us_emp_lgsmartplatform_com');
+                fail('lg_oauth_unrecognized_domain');
+              }
             } catch (error) {
               if (error instanceof SafeError) throw error;
               fail('lg_configuration_invalid');
