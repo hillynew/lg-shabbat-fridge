@@ -90,7 +90,11 @@ jobs:
                     return discovered.protocol === 'https:' && !discovered.username && !discovered.password && !discovered.search && !discovered.hash && discovered.origin === url.origin;
                   } catch { return false; }
                 });
-                if (!confirmsOrigin) fail('lg_gateway_oauth_mismatch');
+                if (!confirmsOrigin) {
+                  const publicOrigin = value => { try { const u = new URL(value); return u.protocol === 'https:' && !u.username && !u.password ? u.origin : 'not_https_url'; } catch { return 'absent_or_invalid'; } };
+                  console.log(JSON.stringify({ public_lg_discovery: { fields: Object.keys(gateway.result || {}).filter(k => /^[A-Za-z0-9_]{1,50}$/.test(k)), empOauthBaseUri: publicOrigin(gateway.result?.empOauthBaseUri), oauthUri: publicOrigin(gateway.result?.oauthUri) } }));
+                  fail('lg_gateway_oauth_mismatch');
+                }
               } else if (!['lgthinq.com', 'lge.com', 'lgecloud.com', 'lgaccount.com'].some(d => url.hostname === d || url.hostname.endsWith('.' + d))) {
                 fail('lg_oauth_unrecognized_domain');
               }
