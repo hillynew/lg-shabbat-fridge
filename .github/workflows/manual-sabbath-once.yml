@@ -1,0 +1,90 @@
+# Explicit one-time ON request. No timer, calendar, or OFF path.
+# Authorization expires 2026-11-13 20:55 UTC. Disable after this request.
+name: One-time Sabbath ON
+on:
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: fridge-manual-command
+  cancel-in-progress: false
+jobs:
+  turn-on:
+    if: github.actor == 'hillynew' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Load integrity-checked LG adapter
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import {createHash} from 'node:crypto';
+          import {mkdir,writeFile} from 'node:fs/promises';
+          await mkdir('reviewed-lg',{recursive:true});
+          await writeFile('reviewed-lg/package.json','{"type":"module"}');
+          for (const [name,expected] of Object.entries({
+            'lg.js':'49ae68076ed51577eed7188456dc8e833fad213f03263c5c67fb8bbc9502b643',
+            'http.js':'98250f8a1e1f917afa8ae516e2d0bc632f072f41e02f4d19460a0a0c66205dfa'
+          })) {
+            const response = await fetch('https://raw.githubusercontent.com/hillynew/lg-shabbat-fridge/24217bb6489087a2040c430fa6fc1a7c770346a2/worker/'+name,
+              {redirect:'error',signal:AbortSignal.timeout(15000)});
+            if (!response.ok) throw new Error('reviewed_source_unavailable');
+            const source = await response.text();
+            if (createHash('sha256').update(source).digest('hex') !== expected) throw new Error('reviewed_source_mismatch');
+            await writeFile('reviewed-lg/'+name,source);
+          }
+          console.log('Reviewed adapter integrity verified.');
+          NODE
+      - name: Turn Sabbath mode ON once and verify
+        shell: bash
+        env:
+          THINQ_V2_REFRESH_TOKEN: ${{ secrets.THINQ_V2_REFRESH_TOKEN }}
+          THINQ_V2_OAUTH_URL: ${{ secrets.THINQ_V2_OAUTH_URL }}
+          THINQ_V2_USER_NUMBER: ${{ secrets.THINQ_V2_USER_NUMBER }}
+          THINQ_V2_CLIENT_ID: ${{ secrets.THINQ_V2_CLIENT_ID }}
+          THINQ_V2_DEVICE_ID: ${{ secrets.THINQ_V2_DEVICE_ID }}
+          THINQ_V2_SABBATH_CTRL: ${{ secrets.THINQ_V2_SABBATH_CTRL }}
+        run: |
+          node --input-type=module <<'NODE'
+          import {createLG} from './reviewed-lg/lg.js';
+          import {requestJson} from './reviewed-lg/http.js';
+          export async function turnOnOnce({client, clock = Date.now, wait = ms => new Promise(r => setTimeout(r, ms)), expiresAt}) {
+            const fresh = s => s?.online === true && typeof s.on === 'boolean' && Number.isFinite(s.updatedAt)
+              && clock() - s.updatedAt >= -60000 && clock() - s.updatedAt <= 600000;
+            if (!Number.isFinite(expiresAt) || clock() >= expiresAt) throw new Error('authorization_expired');
+            const before = await client.read();
+            if (!fresh(before)) throw new Error('initial_state_unknown_or_stale');
+            if (clock() >= expiresAt) throw new Error('authorization_expired');
+            if (before.on) return {verified: true, attempted: false};
+            let acknowledged = false;
+            try { await client.write(true); acknowledged = true; } catch {}
+            // Never resend a write, even if the response is uncertain.
+            for (const delay of [0, 10000, 20000, 30000]) {
+              if (delay) await wait(delay);
+              try {
+                const after = await client.read();
+                if (fresh(after) && after.on && after.updatedAt > before.updatedAt)
+                  return {verified: true, attempted: true, acknowledged};
+              } catch {}
+            }
+            throw new Error('command_not_verified_do_not_retry');
+          }
+          
+          const expiresAt = Date.parse('2026-11-13T20:55:00Z');
+          let requests=0, controlRequests=0;
+          const request = async (url,options={}) => {
+            if (++requests > 18) throw new Error('request_budget_exhausted');
+            if (options.method === 'POST' && new URL(url).pathname.endsWith('/control-sync')) {
+              if (++controlRequests > 1 || Date.now() >= expiresAt) throw new Error('additional_control_request_blocked');
+            }
+            return requestJson(url,options);
+          };
+          try {
+            if (process.env.GITHUB_RUN_ATTEMPT !== '1') throw new Error('rerun_not_authorized');
+            const result = await turnOnOnce({client:createLG(process.env,request),expiresAt});
+            console.log(result.attempted ? 'One-time ON command verified by a newer LG snapshot.' : 'LG already reports ON; no command sent.');
+          } catch (error) {
+            const allowed=['authorization_expired','initial_state_unknown_or_stale','command_not_verified_do_not_retry','rerun_not_authorized'];
+            console.error(allowed.includes(error?.message) ? error.message : 'one_time_control_failed');
+            process.exitCode=1;
+          }
+          NODE
