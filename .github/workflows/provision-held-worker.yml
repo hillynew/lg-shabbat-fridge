@@ -87,7 +87,7 @@ jobs:
                   if (typeof value !== 'string') return false;
                   try {
                     const discovered = new URL(value);
-                    return discovered.protocol === 'https:' && !discovered.username && !discovered.password && !discovered.search && !discovered.hash && discovered.pathname === '/' && discovered.origin === url.origin;
+                    return discovered.protocol === 'https:' && !discovered.username && !discovered.password && !discovered.search && !discovered.hash && discovered.origin === url.origin;
                   } catch { return false; }
                 });
                 if (!confirmsOrigin) fail('lg_gateway_oauth_mismatch');
