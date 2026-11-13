@@ -191,3 +191,15 @@ test('held runtime never constructs an LG client even with credentials', async (
   const result = await run({ ...lgEnv(), SHABBAT_HOLD: 'true', SHABBAT_SCHEDULE_JSON: raw, SHABBAT_SCHEDULE_SHA256: createHash('sha256').update(raw).digest('hex') }, { clock: () => now, clientFactory: () => assert.fail(), log: () => {} });
   assert.equal(result.status, 'held');
 });
+
+test('Workers HTTP uses manual redirects and rejects every redirect without parsing', async () => {
+  for (const status of [301, 302, 303, 307, 308, 403]) {
+    let calls = 0;
+    await assert.rejects(requestJson('https://example.com', { redirect: 'follow' }, async (url, options) => {
+      calls++;
+      assert.equal(options.redirect, 'manual');
+      return { ok: false, status, json: () => assert.fail('Must not parse rejected response') };
+    }), error => error.message === 'upstream_request_failed' && error.kind === 'http' && error.httpStatus === status);
+    assert.equal(calls, 1);
+  }
+});
