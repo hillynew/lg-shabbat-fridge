@@ -48,7 +48,12 @@ export function createLG(env, request = requestJson, observe = () => {}) {
     'x-thinq-app-os': 'ANDROID', 'x-thinq-app-type': 'NUTS', 'x-thinq-app-ver': '5.0.1200' });
   async function stageRequest(stage, url, options) {
     try { return await request(url, options); }
-    catch { throw new Error('lg_' + stage + '_request_failed'); }
+    catch (error) {
+      observe(JSON.stringify({ event: 'lg_request_failed', stage,
+        reason: ['transport', 'http', 'body', 'timeout'].includes(error?.kind) ? error.kind : 'unknown',
+        httpStatus: Number.isInteger(error?.httpStatus) && error.httpStatus >= 100 && error.httpStatus <= 599 ? error.httpStatus : null }));
+      throw new Error('lg_' + stage + '_request_failed');
+    }
   }
   async function connect() {
     if (session) return session;
