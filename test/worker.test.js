@@ -155,3 +155,39 @@ test('writes near next boundary are deferred', async () => {
 test('damaged artifact cannot silently omit a holiday', async () => {
   await assert.rejects(run({ SHABBAT_SCHEDULE_JSON: JSON.stringify(schedule), SHABBAT_SCHEDULE_SHA256: 'incorrect' }, { clock: () => now, log: () => {} }), /calendar_integrity_failed/);
 });
+
+test('US login origin is exact and does not broaden gateway destinations', async () => {
+  const env = { ...lgEnv(), THINQ_V2_OAUTH_URL: 'https://us.lgeapi.com/' };
+  const calls = [], logs = [];
+  const client = createLG(env, async (url, options) => {
+    calls.push({ url, options });
+    if (url.includes('gateway-uri')) return { resultCode: '0000', result: { thinq2Uri: 'https://aic.lgthinq.com:46030/v2' } };
+    if (url.includes('oauth2/token')) return { access_token: 'FAKE_ACCESS' };
+    return { resultCode: '0000', result: { item: [{ deviceId: 'FAKE_DEVICE', online: true, snapshot: { timestamp: now, refState: { sabbathMode: 'ON' } } }] } };
+  }, line => logs.push(line));
+  assert.deepEqual(await client.read(), state(true));
+  assert.equal(calls[1].url, 'https://us.lgeapi.com/oauth/1.0/oauth2/token');
+  assert.equal(calls.length, 3);
+  assert.equal(JSON.parse(logs[0]).mode, 'on');
+  assert.ok(!logs.join('').includes('FAKE_'));
+  for (const url of ['http://us.lgeapi.com', 'https://us.lgeapi.com:444', 'https://us.lgeapi.com/path', 'https://user:pass@us.lgeapi.com', 'https://us.lgeapi.com?token=private', 'https://us.lgeapi.com#private', 'https://us.lgeapi.com.evil.example', 'https://evil.us.lgeapi.com', 'https://lgeapi.com']) {
+    assert.throws(() => createLG({ ...env, THINQ_V2_OAUTH_URL: url }), /lg_host_invalid/);
+  }
+  const badGateway = createLG(env, async () => ({ resultCode: '0000', result: { thinq2Uri: 'https://evil.us.lgeapi.com' } }));
+  await assert.rejects(badGateway.read(), /lg_host_invalid/);
+});
+test('LG connection errors name only their stage', async () => {
+  for (const stage of ['gateway', 'token', 'dashboard']) {
+    const client = createLG(lgEnv(), async url => {
+      if ((stage === 'gateway' && url.includes('gateway-uri')) || (stage === 'token' && url.includes('oauth2/token')) || (stage === 'dashboard' && url.endsWith('dashboard'))) throw new Error('SECRET_RESPONSE');
+      if (url.includes('gateway-uri')) return { resultCode: '0000', result: { thinq2Uri: 'https://aic.lgthinq.com/v2' } };
+      return { access_token: 'FAKE_ACCESS' };
+    });
+    await assert.rejects(client.read(), new RegExp('^Error: lg_' + stage + '_request_failed$'));
+  }
+});
+test('held runtime never constructs an LG client even with credentials', async () => {
+  const raw = JSON.stringify(schedule);
+  const result = await run({ ...lgEnv(), SHABBAT_HOLD: 'true', SHABBAT_SCHEDULE_JSON: raw, SHABBAT_SCHEDULE_SHA256: createHash('sha256').update(raw).digest('hex') }, { clock: () => now, clientFactory: () => assert.fail(), log: () => {} });
+  assert.equal(result.status, 'held');
+});
