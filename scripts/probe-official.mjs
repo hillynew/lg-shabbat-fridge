@@ -78,6 +78,7 @@ export async function officialGet(path, cfg, fetcher = fetch, timeoutMs = 8000) 
 
 export async function probe(env, fetcher = fetch, timeoutMs = 8000) {
   let stage = 'configuration';
+  const discovery = {};
   try {
     const cfg = { pat: env.THINQ_PAT?.trim(), clientId: env.THINQ_CLIENT_ID?.trim() };
     const id = env.THINQ_DEVICE_ID?.trim() || env.THINQ_V2_DEVICE_ID?.trim();
@@ -89,23 +90,38 @@ export async function probe(env, fetcher = fetch, timeoutMs = 8000) {
     stage = 'devices';
     const devices = await officialGet('/devices', cfg, fetcher, timeoutMs);
     if (!Array.isArray(devices)) throw new ProbeError('invalid_device_list');
+    const refrigerators = devices.filter(device => device?.deviceInfo?.deviceType === 'DEVICE_REFRIGERATOR');
+    discovery.deviceCount = devices.length;
+    discovery.refrigeratorCount = refrigerators.length;
     const matches = devices.filter(device => device?.deviceId === id);
-    if (matches.length !== 1) throw new ProbeError('configured_device_not_uniquely_found');
-    if (matches[0].deviceInfo?.deviceType !== 'DEVICE_REFRIGERATOR') {
+    let target = matches.length === 1 ? matches[0] : null;
+    discovery.configuredIdMatched = target !== null;
+    // Explicit diagnostic-only discovery may inspect the account's sole fridge.
+    // It does not establish that this is the intended control target or save its ID.
+    if (matches.length === 0 && env.THINQ_PROBE_DISCOVER === 'true' && refrigerators.length === 1) {
+      target = refrigerators[0];
+    }
+    if (!target) throw new ProbeError('configured_device_not_uniquely_found');
+    if (target.deviceInfo?.deviceType !== 'DEVICE_REFRIGERATOR') {
       throw new ProbeError('configured_device_not_refrigerator');
     }
+    const targetId = target.deviceId;
+    if (typeof targetId !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(targetId)) {
+      throw new ProbeError('invalid_discovered_device_id');
+    }
     stage = 'profile';
-    const capability = inspectSabbath(await officialGet(`/devices/${id}/profile`, cfg, fetcher, timeoutMs));
+    const capability = inspectSabbath(await officialGet(`/devices/${targetId}/profile`, cfg, fetcher, timeoutMs));
     stage = 'state';
-    const state = await officialGet(`/devices/${id}/state`, cfg, fetcher, timeoutMs);
+    const state = await officialGet(`/devices/${targetId}/state`, cfg, fetcher, timeoutMs);
     if (!object(state)) throw new ProbeError('invalid_state');
     const value = state.sabbath?.sabbathMode;
     return { event: 'official_probe', status: 'read_complete', controlRequests: 0,
-      capability, reportedMode: value === 'ON' ? 'on' : value === 'OFF' ? 'off' : 'unknown',
+      ...discovery, capability, reportedMode: value === 'ON' ? 'on' : value === 'OFF' ? 'off' : 'unknown',
       // A returned state has no established freshness guarantee. Do not use this as control authorization.
       freshnessVerified: false, automationReady: false };
   } catch (error) {
     return { event: 'official_probe', status: 'failed', stage, controlRequests: 0,
+      ...discovery,
       reason: error instanceof ProbeError ? error.message : 'probe_failed',
       httpStatus: error instanceof ProbeError ? error.httpStatus : null };
   }
