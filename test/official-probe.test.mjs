@@ -45,6 +45,30 @@ test('a non-refrigerator with the same ID is rejected', async () => {
   const result = await probe(env, mock([[{ deviceId: env.THINQ_V2_DEVICE_ID, deviceInfo: { deviceType: 'DEVICE_OVEN' } }]]));
   assert.equal(result.reason, 'configured_device_not_refrigerator');
 });
+test('explicit read-only discovery inspects a sole fridge but never confirms a control target', async () => {
+  const calls = [];
+  const result = await probe({ ...env, THINQ_PROBE_DISCOVER: 'true' }, mock([
+    [{ ...devices[0], deviceId: 'DIFFERENT_PRIVATE_ID' }], profile(spec), { sabbath: { sabbathMode: 'OFF' } }
+  ], calls));
+  assert.equal(result.status, 'read_complete');
+  assert.equal(result.configuredIdMatched, false);
+  assert.equal(result.refrigeratorCount, 1);
+  assert.equal(result.automationReady, false);
+  assert.equal(result.controlRequests, 0);
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every(call => call.opts.method === 'GET'));
+  assert.ok(!JSON.stringify(result).includes('PRIVATE'));
+});
+test('discovery never picks among multiple fridges or trusts an unsafe discovered ID', async () => {
+  for (const list of [[], [{ ...devices[0], deviceId: 'fridge1' }, { ...devices[0], deviceId: 'fridge2' }],
+    [{ ...devices[0], deviceId: '../PRIVATE_UNSAFE' }], [devices[0], devices[0]]]) {
+    const calls = [];
+    const result = await probe({ ...env, THINQ_PROBE_DISCOVER: 'true' }, mock([list], calls));
+    assert.equal(result.status, 'failed');
+    assert.equal(calls.length, 1);
+    assert.ok(!JSON.stringify(result).includes('PRIVATE'));
+  }
+});
 test('all live operations are GET to the fixed LG origin and public output is redacted', async () => {
   const calls = [];
   const result = await probe(env, mock([devices, profile(spec), { sabbath: { sabbathMode: 'ON' }, secret: env.THINQ_PAT }], calls));
