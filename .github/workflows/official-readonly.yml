@@ -20,14 +20,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p scripts test
-          curl --fail --silent --show-error --proto '=https' --max-time 30 'https://raw.githubusercontent.com/hillynew/lg-shabbat-fridge/0b9248e77f2d18ea9467d4793492cc94a891c1c1/scripts/probe-official.mjs' -o scripts/probe-official.mjs
-          curl --fail --silent --show-error --proto '=https' --max-time 30 'https://raw.githubusercontent.com/hillynew/lg-shabbat-fridge/0b9248e77f2d18ea9467d4793492cc94a891c1c1/test/official-probe.test.mjs' -o test/official-probe.test.mjs
-          echo '858d81933aac58581a4d5bc47be9ba51365b651d0e3b46dbdc034dd022a4749e  scripts/probe-official.mjs' | sha256sum --check -
-          echo '36d5fe8c6685bcfdbe007b460ec9cdccdbfa23a513e1c2b96bbf27bcd6f7c902  test/official-probe.test.mjs' | sha256sum --check -
+          curl --fail --silent --show-error --proto '=https' --max-time 30 'https://raw.githubusercontent.com/hillynew/lg-shabbat-fridge/c44fb7ac73699726508c4fb7a1668bfdc827e36e/scripts/probe-official.mjs' -o scripts/probe-official.mjs
+          curl --fail --silent --show-error --proto '=https' --max-time 30 'https://raw.githubusercontent.com/hillynew/lg-shabbat-fridge/c44fb7ac73699726508c4fb7a1668bfdc827e36e/test/official-probe.test.mjs' -o test/official-probe.test.mjs
+          echo 'c3f979a13601cc934496e40bd0b616d1031690ea540e9558877096c04b18d5bb  scripts/probe-official.mjs' | sha256sum --check -
+          echo '38c6c260690c7b68407a00981b8eb4bb5c2d2537a54bd4d2b506d314818e57d8  test/official-probe.test.mjs' | sha256sum --check -
       - name: Test diagnostic without credentials
         run: node --test test/official-probe.test.mjs
       - name: Read official device capabilities and state
         env:
+          THINQ_PROBE_DISCOVER: 'true'
           THINQ_PAT: ${{ secrets.THINQ_PAT }}
           THINQ_CLIENT_ID: ${{ secrets.THINQ_CLIENT_ID }}
           THINQ_DEVICE_ID: ${{ secrets.THINQ_DEVICE_ID }}
