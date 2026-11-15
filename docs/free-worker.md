@@ -85,8 +85,7 @@ invocation. Do not rely on GitHub's scheduler for renewal. A warning event begin
 45 days before expiry; after expiry every tick fails and makes **no change**, even
 if Sabbath mode remains ON. Logs are not user notifications: before live activation,
 set an independent renewal reminder and verify an independent missing-run/failure
-alert reaches the owner. This repository does not create an alert account or promise
-monitoring. There is no telemetry/heartbeat URL that transmits household data.
+alert reaches the owner.
 
 ## Install held, then shadow
 
@@ -115,10 +114,26 @@ monitoring. There is no telemetry/heartbeat URL that transmits household data.
    10 ms; otherwise stop and redesign rather than upgrade.
 
 Logs contain event, timestamp, duration, status, booleans or fixed safe error codes,
-not response bodies, credentials, device IDs or location. A failed invocation throws
-and is visible in Cron/Worker logs. Dashboard snapshots are not physical confirmation.
-Readback requires a timestamp at least as new as the initial snapshot **and command
-start**; inspect the actual fridge for the first authorized transition.
+including HTTP status and known LG rejection codes. A failed invocation throws and is
+visible in Cron/Worker logs. Dashboard snapshots are not physical confirmation. An
+online, known state must carry a timestamp no more than three minutes old and never
+in the future. A stale snapshot gets one more read after 1.5 seconds. Readback
+requires a timestamp strictly newer than both the initial snapshot and command
+start. Inspect the actual fridge for the first authorized transition.
+
+## Verify alerts in shadow mode
+
+An optional `SHABBAT_HEALTHCHECKS_URL` Worker secret enables [Healthchecks.io](https://healthchecks.io/docs/http_api/).
+Use the check's base UUID ping URL, with the expected period set to three minutes
+and grace time chosen from observed run durations and schedule delays. The Worker
+sends bodyless start, success, or failure pings. A missed schedule produces no
+start ping. A failed tick reports failure and stays failed in the Worker logs.
+An intentional hold reports a completed tick without an appliance read.
+
+Test both a missing-run notification and an explicit failure notification, then
+confirm recovery notification behavior. Run these exercises with appliance writes
+disabled. The monitoring account, notifications, and URL secret require setup
+before this feature reports to the owner.
 
 ## One-writer cutover (separate authorized step)
 
@@ -139,14 +154,20 @@ same-state duplicate commands are idempotent, but execution is not serialized.
 The schedule is rechecked immediately before a write, and writes within 30 seconds
 before any boundary are deferred. LG can still apply an in-flight command late.
 No exactly-once or transactional guarantee is claimed. Requests abort after 8 seconds;
-uncertain writes are never repeated, only read back up to three times. One retry with
-a rotated client ID is allowed only for LG's explicit rejection codes 9006/9012.
+uncertain writes are never repeated, only read back up to three times, spaced
+1.5 seconds apart. Stop the invocation on LG access rejection, throttling, or an
+explicit challenge. The configured client ID stays fixed.
 The next Cron reconciles failures rather than looping for an hour.
 
-For a manual override: deploy hold true, wait 3 minutes and ensure all old writers
-are stopped **before** manually changing the fridge. Hold has no automatic expiry;
-explicitly release it when automation should resume. An LG-app manual change without
-hold may be undone at the next tick. A binding change is not instantaneous cancellation.
+For a manual override, deploy `SHABBAT_HOLD=true` and let old invocations drain
+**before** manually changing the fridge. Explicitly release the hold when
+automation should resume. For a planned automatic resumption, set
+`SHABBAT_HOLD=false` and `SHABBAT_HOLD_UNTIL` to a future UTC timestamp with
+whole seconds, for example `2027-01-04T15:00:00Z`. The absolute hold takes
+precedence if enabled. Once the timed hold expires, the next tick resumes
+reconciliation under the existing writer and write-enable flags. An LG-app manual
+change without a hold may be undone at the next tick. A binding change does not
+cancel invocations already running.
 
 Rollback: hold/disable Worker and drain it first, then re-enable exactly one previous
 controller. The old GitHub implementation retains its existing missing-calendar and

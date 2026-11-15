@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { reconcile, scheduleAt, knownState } from '../worker/reconcile.js';
 import { buildSchedule } from '../worker/calendar.js';
-import { run } from '../worker/index.js';
+import { run, runScheduled } from '../worker/index.js';
 import { createLG } from '../worker/lg.js';
 import { requestJson } from '../worker/http.js';
 import { zonedWallTimeToInstant } from '../src/hebcal.js';
@@ -12,6 +12,12 @@ const now = Date.parse('2026-11-13T18:00Z');
 const schedule = { version: 1, validFrom: now - 100000, validUntil: now + 99999999, spans: [{ on: now - 1, off: now + 100000 }] };
 const state = on => ({ on, updatedAt: now, online: true });
 const base = { schedule, now, enabled: true, owner: 'cloudflare', hold: false, sleep: async () => {} };
+const rawSchedule = JSON.stringify(schedule);
+const workerEnv = {
+  SHABBAT_SCHEDULE_JSON: rawSchedule,
+  SHABBAT_SCHEDULE_SHA256: createHash('sha256').update(rawSchedule).digest('hex'),
+  SHABBAT_HOLD: 'false',
+};
 test('ON and OFF boundaries are half open', () => {
   assert.equal(scheduleAt(schedule, now), true);
   assert.equal(scheduleAt(schedule, now + 100000), false);
@@ -34,22 +40,59 @@ test('hold preserves manual overrides without reads or writes', async () => {
   assert.equal((await reconcile({ ...base, hold: true, read: () => assert.fail(), write: () => assert.fail() })).status, 'held');
 });
 test('unknown, offline, stale and future timestamps fail closed', () => {
-  for (const value of [{ on: null }, { ...state(false), online: false }, { ...state(false), updatedAt: now - 600001 }, { ...state(false), updatedAt: now + 60001 }, { on: true, online: true }]) assert.throws(() => knownState(value, now));
+  assert.equal(knownState({ ...state(false), updatedAt: now - 180000 }, now), false);
+  for (const value of [{ on: null }, { ...state(false), online: false }, { ...state(false), updatedAt: now - 180001 }, { ...state(false), updatedAt: now + 1 }, { on: true, online: true }]) assert.throws(() => knownState(value, now));
+});
+test('failed initial read stops before a command', async () => {
+  let reads = 0;
+  await assert.rejects(reconcile({ ...base, read: async () => { reads++; throw new Error('dashboard_failure'); }, write: () => assert.fail() }), /dashboard_failure/);
+  assert.equal(reads, 1);
+});
+test('stale online status gets one spaced re-read and never triggers a write on its own', async () => {
+  const stale = { ...state(false), updatedAt: now - 180001 };
+  for (const second of [stale, state(true)]) {
+    const observations = [stale, second], sleeps = [];
+    const attempt = reconcile({ ...base, read: async () => observations.shift(),
+      sleep: async ms => sleeps.push(ms), write: () => assert.fail() });
+    if (second === stale) await assert.rejects(attempt, /state_unknown_or_stale/);
+    else assert.equal((await attempt).status, 'unchanged');
+    assert.deepEqual(sleeps, [1500]);
+    assert.equal(observations.length, 0);
+  }
 });
 test('single write followed by readback verification', async () => {
-  let reads = 0, writes = 0;
-  const result = await reconcile({ ...base, read: async () => state(++reads > 1), write: async on => { assert.equal(on, true); writes++; } });
+  let reads = 0, writes = 0, time = now;
+  const result = await reconcile({ ...base, clock: () => time, sleep: async ms => { time += ms; },
+    read: async () => ({ ...state(++reads > 1), updatedAt: time }),
+    write: async on => { assert.equal(on, true); writes++; } });
   assert.equal(result.status, 'verified'); assert.equal(writes, 1); assert.equal(reads, 2);
 });
 test('uncertain write is not retried; readback resolves success', async () => {
-  let reads = 0, writes = 0;
-  const result = await reconcile({ ...base, read: async () => state(++reads > 1), write: async () => { writes++; throw new Error('timeout'); } });
+  let reads = 0, writes = 0, time = now;
+  const result = await reconcile({ ...base, clock: () => time, sleep: async ms => { time += ms; },
+    read: async () => ({ ...state(++reads > 1), updatedAt: time }),
+    write: async () => { writes++; throw new Error('timeout'); } });
   assert.equal(result.status, 'verified_after_uncertain_write'); assert.equal(writes, 1);
 });
 test('failed write/readback is a failed invocation after exactly three reads', async () => {
   let reads = 0, writes = 0;
   await assert.rejects(reconcile({ ...base, read: async () => { reads++; return state(false); }, write: async () => { writes++; throw new Error('failed'); } }), /write_unverified/);
   assert.equal(writes, 1); assert.equal(reads, 4);
+});
+test('access rejection stops further requests during a write or readback', async () => {
+  const rejection = Object.assign(new Error('lg_request_rejected'), { accessRejected: true });
+  for (const stage of ['write', 'readback']) {
+    let reads = 0, writes = 0;
+    await assert.rejects(reconcile({ ...base, read: async () => {
+      if (++reads > 1) throw rejection;
+      return state(false);
+    }, write: async () => {
+      writes++;
+      if (stage === 'write') throw rejection;
+    } }), /lg_request_rejected/);
+    assert.equal(reads, stage === 'write' ? 1 : 2);
+    assert.equal(writes, 1);
+  }
 });
 test('boundary crossed while reading never applies old decision', async () => {
   const result = await reconcile({ ...base, clock: () => now + 100001, read: async () => state(false), write: () => assert.fail() });
@@ -124,18 +167,20 @@ test('LG adapter preserves gateway base path, reuses token and writes only selec
   assert.deepEqual(JSON.parse(calls[3].options.body).dataSetList, { refState: { sabbathMode: 'ON', temperature: 'IGNORE' } });
   assert.equal(calls.length, 4);
 });
-test('explicit client ID rejection retries once, uncertain writes never retry', async () => {
-  let rejected = 0;
-  const ids = [];
-  const client = createLG(lgEnv(), async (url, options) => {
-    if (url.includes('gateway-uri')) return { resultCode: '0000', result: { thinq2Uri: 'https://aic.lgthinq.com/v2' } };
-    if (url.includes('oauth2/token')) return { access_token: 'FAKE_ACCESS' };
-    ids.push(options.headers['x-client-id']);
-    rejected++;
-    return { resultCode: '9006' };
-  });
-  await assert.rejects(client.read(), /lg_response_error/);
-  assert.equal(rejected, 2); assert.notEqual(ids[0], ids[1]);
+test('LG 9006 is logged in both HTTP response forms with no retry or identity change', async () => {
+  for (const status of [200, 400]) {
+    const ids = [], logs = [];
+    const client = createLG(lgEnv(), (url, options) => requestJson(url, options, async () => {
+      if (url.includes('gateway-uri')) return Response.json({ resultCode: '0000', result: { thinq2Uri: 'https://aic.lgthinq.com/v2' } });
+      if (url.includes('oauth2/token')) return Response.json({ access_token: 'FAKE_ACCESS' });
+      ids.push(options.headers['x-client-id']);
+      return Response.json({ resultCode: '9006', result: 'PRIVATE_RESPONSE' }, { status });
+    }), line => logs.push(line));
+    await assert.rejects(client.read(), { message: 'lg_dashboard_request_failed', accessRejected: true });
+    assert.deepEqual(ids, ['FAKE_CLIENT']);
+    assert.deepEqual(logs.map(JSON.parse), [{ event: 'lg_request_failed', stage: 'dashboard',
+      reason: status === 400 ? 'http' : 'lg', httpStatus: status === 400 ? 400 : null, lgCode: '9006' }]);
+  }
 });
 test('held schedule needs no LG credentials', async () => {
   const result = await run({ SHABBAT_SCHEDULE_JSON: JSON.stringify(schedule), SHABBAT_SCHEDULE_SHA256: createHash('sha256').update(JSON.stringify(schedule)).digest('hex') }, { clock: () => now, log: () => {} });
@@ -144,9 +189,12 @@ test('held schedule needs no LG credentials', async () => {
 test('runtime rejects a missing weekly span and uncovered far edge', () => {
   assert.throws(() => scheduleAt({ ...schedule, validUntil: now + 15 * 86400000 }, now), /calendar_invalid/);
 });
-test('older desired-state snapshot cannot verify a write', async () => {
-  let calls = 0;
-  await assert.rejects(reconcile({ ...base, read: async () => ++calls === 1 ? state(false) : { ...state(true), updatedAt: now - 300000 }, write: async () => {} }), /write_unverified/);
+test('desired-state snapshot at or before command start cannot verify a write', async () => {
+  for (const updatedAt of [now - 1000, now]) {
+    let calls = 0;
+    await assert.rejects(reconcile({ ...base, read: async () => ++calls === 1 ? state(false) : { ...state(true), updatedAt }, write: async () => {} }), /write_unverified/);
+    assert.equal(calls, 4);
+  }
 });
 test('writes near next boundary are deferred', async () => {
   const result = await reconcile({ ...base, schedule: { ...schedule, spans: [{ on: now - 1, off: now + 20000 }] }, read: async () => state(false), write: () => assert.fail() });
@@ -191,6 +239,18 @@ test('held runtime never constructs an LG client even with credentials', async (
   const result = await run({ ...lgEnv(), SHABBAT_HOLD: 'true', SHABBAT_SCHEDULE_JSON: raw, SHABBAT_SCHEDULE_SHA256: createHash('sha256').update(raw).digest('hex') }, { clock: () => now, clientFactory: () => assert.fail(), log: () => {} });
   assert.equal(result.status, 'held');
 });
+test('timed hold blocks all LG requests until expiry and a malformed timestamp fails closed', async () => {
+  const until = '2026-11-13T18:00:00Z';
+  const env = { ...workerEnv, SHABBAT_HOLD_UNTIL: until };
+  const deps = { clock: () => now - 1, clientFactory: () => assert.fail(), log: () => {} };
+  assert.equal((await run(env, deps)).status, 'held');
+  assert.equal((await run(env, { ...deps, clock: () => now,
+    clientFactory: () => ({ read: async () => state(false), write: () => assert.fail() }) })).status, 'shadow');
+  for (const invalid of ['tomorrow', '2026-02-30T18:00:00Z', '2026-11-13T13:00:00-05:00']) {
+    await assert.rejects(run({ ...env, SHABBAT_HOLD_UNTIL: invalid }, deps), /hold_until_invalid/);
+  }
+  assert.equal((await run({ ...env, SHABBAT_HOLD: 'true' }, { ...deps, clock: () => now + 1 })).status, 'held');
+});
 
 test('Workers HTTP uses manual redirects and rejects every redirect without parsing', async () => {
   for (const status of [301, 302, 303, 307, 308, 403]) {
@@ -202,4 +262,44 @@ test('Workers HTTP uses manual redirects and rejects every redirect without pars
     }), error => error.message === 'upstream_request_failed' && error.kind === 'http' && error.httpStatus === status);
     assert.equal(calls, 1);
   }
+});
+test('rate limit and challenge are terminal LG responses', async () => {
+  for (const response of [new Response(null, { status: 429 }),
+    new Response('challenge', { status: 503, headers: { 'cf-mitigated': 'challenge' } })]) {
+    await assert.rejects(requestJson('https://example.com', {}, async () => response),
+      { message: 'upstream_request_failed', httpStatus: response.status, accessRejected: true });
+  }
+});
+
+const heartbeatURL = 'https://hc-ping.com/d1665499-e827-441f-bf13-8f15e8f4c0b9';
+test('scheduled heartbeat reports starts and distinct completion and failure signals', async () => {
+  const env = { ...workerEnv, SHABBAT_HEALTHCHECKS_URL: heartbeatURL };
+  const requests = [];
+  const deps = { clock: () => now, log: () => {},
+    fetcher: async (url, options) => {
+      requests.push([url, options.method, options.redirect, options.body]);
+      return { status: 200 };
+    },
+    clientFactory: () => ({ read: async () => state(false), write: () => assert.fail() }) };
+  assert.equal((await runScheduled(env, deps)).status, 'shadow');
+  await assert.rejects(runScheduled({ ...env, SHABBAT_SCHEDULE_SHA256: 'wrong' }, deps), /calendar_integrity_failed/);
+  assert.deepEqual(requests, [heartbeatURL + '/start', heartbeatURL, heartbeatURL + '/start', heartbeatURL + '/fail']
+    .map(url => [url, 'HEAD', 'manual', undefined]));
+});
+test('heartbeat is optional and a ping failure cannot mask the control result or leak its URL', async () => {
+  const logs = [];
+  const deps = { clock: () => now, log: line => logs.push(JSON.parse(line)), clientFactory: () => assert.fail() };
+  const env = { ...workerEnv, SHABBAT_HOLD: 'true' };
+  await runScheduled(env, { ...deps, fetcher: () => assert.fail() });
+  let rejectedDestinations = 0;
+  for (const invalid of ['https://other.example/ping', heartbeatURL + '?secret=test', heartbeatURL + '/fail']) {
+    assert.equal((await runScheduled({ ...env, SHABBAT_HEALTHCHECKS_URL: invalid },
+      { ...deps, fetcher: async () => { rejectedDestinations++; } })).status, 'held');
+  }
+  assert.equal(rejectedDestinations, 0);
+  const withHeartbeat = { ...env, SHABBAT_HEALTHCHECKS_URL: heartbeatURL };
+  const fetcher = async () => { throw new Error(heartbeatURL); };
+  assert.equal((await runScheduled(withHeartbeat, { ...deps, fetcher })).status, 'held');
+  assert.deepEqual(logs.filter(log => log.event === 'healthchecks_ping_failed').map(log => log.phase), ['start', 'success']);
+  assert.ok(!JSON.stringify(logs).includes(heartbeatURL));
 });

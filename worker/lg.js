@@ -1,5 +1,5 @@
 // Minimal runtime-only LG app-channel adapter. No login/password flow or process.env.
-import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { requestJson } from './http.js';
 const gatewayURL = 'https://route.lgthinq.com:46030/v1/service/application/gateway-uri';
 const authPath = '/oauth/1.0/oauth2/token';
@@ -23,7 +23,9 @@ function oauthURL(value) {
 function unwrap(json) {
   if (json?.resultCode !== '0000') {
     const error = new Error('lg_response_error');
-    error.lgCode = json?.resultCode;
+    error.kind = 'lg';
+    error.lgCode = ['9006', '9012'].includes(json?.resultCode) ? json.resultCode : null;
+    error.accessRejected = error.lgCode !== null;
     throw error;
   }
   return json.result;
@@ -40,24 +42,30 @@ export function createLG(env, request = requestJson, observe = () => {}) {
       || !ctrl.templateKeys.includes('sabbathMode') || !Array.isArray(ctrl.path) || !ctrl.path.length
       || [...ctrl.templateKeys, ...ctrl.path].some(k => typeof k !== 'string' || ['__proto__', 'constructor', 'prototype'].includes(k))) throw new Error('lg_control_invalid');
   let session;
-  let clientId = env.THINQ_V2_CLIENT_ID;
+  const clientId = env.THINQ_V2_CLIENT_ID;
   const headers = () => ({ Accept: 'application/json', 'Content-type': 'application/json;charset=UTF-8',
     'x-api-key': 'VGhpblEyLjAgU0VSVklDRQ==', 'x-client-id': clientId,
     'x-country-code': 'US', 'x-language-code': 'en-US', 'x-message-id': randomUUID(),
     'x-service-code': 'SVC202', 'x-service-phase': 'OP', 'x-thinq-app-level': 'PRD',
     'x-thinq-app-os': 'ANDROID', 'x-thinq-app-type': 'NUTS', 'x-thinq-app-ver': '5.0.1200' });
   async function stageRequest(stage, url, options) {
-    try { return await request(url, options); }
-    catch (error) {
+    try {
+      const json = await request(url, options);
+      return stage === 'token' ? json : unwrap(json);
+    } catch (error) {
+      const lgCode = ['9006', '9012'].includes(error?.lgCode) ? error.lgCode : null;
       observe(JSON.stringify({ event: 'lg_request_failed', stage,
-        reason: ['transport', 'http', 'body', 'timeout'].includes(error?.kind) ? error.kind : 'unknown',
-        httpStatus: Number.isInteger(error?.httpStatus) && error.httpStatus >= 100 && error.httpStatus <= 599 ? error.httpStatus : null }));
-      throw new Error('lg_' + stage + '_request_failed');
+        reason: ['transport', 'http', 'body', 'timeout', 'challenge', 'lg'].includes(error?.kind) ? error.kind : 'unknown',
+        httpStatus: Number.isInteger(error?.httpStatus) && error.httpStatus >= 100 && error.httpStatus <= 599 ? error.httpStatus : null,
+        lgCode }));
+      const failure = new Error('lg_' + stage + '_request_failed');
+      failure.accessRejected = error?.accessRejected === true;
+      throw failure;
     }
   }
   async function connect() {
     if (session) return session;
-    const gateway = unwrap(await stageRequest('gateway', gatewayURL, { headers: headers() }));
+    const gateway = await stageRequest('gateway', gatewayURL, { headers: headers() });
     const base = lgURL(gateway.thinq2Uri);
     const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: env.THINQ_V2_REFRESH_TOKEN }).toString();
     const date = new Date().toUTCString().replace('GMT', '+0000');
@@ -70,20 +78,12 @@ export function createLG(env, request = requestJson, observe = () => {}) {
     session = { base, token: token.access_token };
     return session;
   }
-  async function api(path, payload, rotated = false) {
+  async function api(path, payload) {
     const { base, token } = await connect();
-    try { return unwrap(await stageRequest(payload ? 'write' : 'dashboard', `${base}/${path}`,  { method: payload ? 'POST' : 'GET',
+    return stageRequest(payload ? 'write' : 'dashboard', `${base}/${path}`, { method: payload ? 'POST' : 'GET',
       headers: { ...headers(), 'x-emp-token': token, 'x-user-no': env.THINQ_V2_USER_NUMBER,
         ...(payload ? { 'x-thinq-security-key': 'nuts_securitykey' } : {}) },
-      ...(payload ? { body: JSON.stringify(payload) } : {}) }));
-    } catch (error) {
-      // Only explicit rejection codes permit one retry. Never retry uncertain writes.
-      if (!rotated && ['9006', '9012'].includes(error.lgCode)) {
-        clientId = createHash('sha256').update(env.THINQ_V2_USER_NUMBER + String(Date.now())).digest('hex');
-        return api(path, payload, true);
-      }
-      throw error;
-    }
+      ...(payload ? { body: JSON.stringify(payload) } : {}) });
   }
   return {
     async read() {
