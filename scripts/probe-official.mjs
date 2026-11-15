@@ -32,6 +32,29 @@ export function inspectSabbath(profile) {
     enumPair: writable ? enumPair : null };
 }
 
+// Decode only the representations declared by the official device profile.
+// LG's refrigerator schema can use true/false, not only the app API's ON/OFF.
+export function decodeSabbath(profile, state) {
+  if (!inspectSabbath(profile).readable) return 'unknown';
+  const spec = profile.property.sabbath.sabbathMode;
+  const value = state?.sabbath?.sabbathMode;
+  if (object(spec) && spec.type === 'boolean' && typeof value === 'boolean' &&
+      Array.isArray(spec.value?.r) && spec.value.r.includes(value)) {
+    return value ? 'on' : 'off';
+  }
+  if ((typeof spec === 'string' && value === spec) ||
+      (object(spec) && spec.type === 'enum' && Array.isArray(spec.value?.r) && spec.value.r.includes(value))) {
+    return value === 'ON' ? 'on' : value === 'OFF' ? 'off' : 'unknown';
+  }
+  return 'unknown';
+}
+
+function publicModelName(device) {
+  // Manufacturer model only: never fall back to alias, ID, serial or arbitrary metadata.
+  const name = device.deviceInfo?.modelName;
+  return typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$/.test(name) ? name : null;
+}
+
 export async function officialGet(path, cfg, fetcher = fetch, timeoutMs = 8000) {
   const controller = new AbortController();
   let timer;
@@ -110,13 +133,14 @@ export async function probe(env, fetcher = fetch, timeoutMs = 8000) {
       throw new ProbeError('invalid_discovered_device_id');
     }
     stage = 'profile';
-    const capability = inspectSabbath(await officialGet(`/devices/${targetId}/profile`, cfg, fetcher, timeoutMs));
+    const profile = await officialGet(`/devices/${targetId}/profile`, cfg, fetcher, timeoutMs);
+    const capability = inspectSabbath(profile);
     stage = 'state';
     const state = await officialGet(`/devices/${targetId}/state`, cfg, fetcher, timeoutMs);
     if (!object(state)) throw new ProbeError('invalid_state');
-    const value = state.sabbath?.sabbathMode;
     return { event: 'official_probe', status: 'read_complete', controlRequests: 0,
-      ...discovery, capability, reportedMode: value === 'ON' ? 'on' : value === 'OFF' ? 'off' : 'unknown',
+      ...discovery, modelName: publicModelName(target), capability,
+      reportedMode: decodeSabbath(profile, state),
       // A returned state has no established freshness guarantee. Do not use this as control authorization.
       freshnessVerified: false, automationReady: false };
   } catch (error) {
@@ -132,3 +156,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   console.log(JSON.stringify(result));
   if (result.status === 'failed') process.exitCode = 1;
 }
+
