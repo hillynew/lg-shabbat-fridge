@@ -1,0 +1,33 @@
+name: One-time LG ON-OFF commissioning test
+
+on:
+  push:
+    branches: [recovery/existing-session-check]
+    paths: [.github/workflows/control-cycle-test.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: existing-lg-session-status
+  cancel-in-progress: false
+
+jobs:
+  test-control:
+    if: github.actor == 'hillynew' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Test control logic without credentials
+        run: node --test test/existing-session.test.mjs test/control-cycle.test.mjs
+      - name: Verify ON then restore and verify OFF
+        env:
+          CONTROL_TEST_EXPIRES_AT: '2026-11-16T01:00:00Z'
+          THINQ_V2_REFRESH_TOKEN: ${{ secrets.THINQ_V2_REFRESH_TOKEN }}
+          THINQ_V2_OAUTH_URL: ${{ secrets.THINQ_V2_OAUTH_URL }}
+          THINQ_V2_USER_NUMBER: ${{ secrets.THINQ_V2_USER_NUMBER }}
+          THINQ_V2_CLIENT_ID: ${{ secrets.THINQ_V2_CLIENT_ID }}
+          THINQ_V2_DEVICE_ID: ${{ secrets.THINQ_V2_DEVICE_ID }}
+          THINQ_V2_SABBATH_CTRL: ${{ secrets.THINQ_V2_SABBATH_CTRL }}
+        run: node scripts/test-control-cycle.mjs
