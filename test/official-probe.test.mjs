@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inspectSabbath, probe } from '../scripts/probe-official.mjs';
+import { inspectSabbath, decodeSabbath, probe } from '../scripts/probe-official.mjs';
 const env = { THINQ_PAT: 'PRIVATE_TOKEN', THINQ_CLIENT_ID: '5fa84b81-6b41-4e3a-bbab-03ae4027cc92', THINQ_V2_DEVICE_ID: 'PRIVATE_DEVICE' };
 const spec = { type: 'enum', mode: ['r', 'w'], value: { r: ['ON', 'OFF'], w: ['OFF', 'ON'] } };
 const profile = value => ({ property: { sabbath: { sabbathMode: value } } });
@@ -90,6 +90,38 @@ test('unknown state is not treated as OFF', async () => {
   assert.equal(result.reportedMode, 'unknown');
   assert.ok(!JSON.stringify(result).includes('PRIVATE'));
 });
+test('official boolean Sabbath state decodes without granting write access', async () => {
+  const booleanSpec = { type: 'boolean', mode: ['r'], value: { r: [false, true] } };
+  for (const [value, expected] of [[true, 'on'], [false, 'off']]) {
+    const result = await probe(env, mock([devices, profile(booleanSpec), { sabbath: { sabbathMode: value } }]));
+    assert.equal(result.reportedMode, expected);
+    assert.equal(result.capability.writable, false);
+    assert.equal(result.controlRequests, 0);
+    assert.equal(result.automationReady, false);
+    assert.equal(result.freshnessVerified, false);
+  }
+});
+test('state decoding rejects coercion, mismatched schemas and undeclared values', () => {
+  const booleanSpec = { type: 'boolean', mode: ['r'], value: { r: [false, true] } };
+  for (const value of ['true', 'false', 'ON', 'OFF', 1, 0, null, undefined, {}, []]) {
+    assert.equal(decodeSabbath(profile(booleanSpec), { sabbath: { sabbathMode: value } }), 'unknown');
+  }
+  assert.equal(decodeSabbath(profile(spec), { sabbath: { sabbathMode: false } }), 'unknown');
+  assert.equal(decodeSabbath(profile({ ...booleanSpec, value: { r: [true] } }), { sabbath: { sabbathMode: false } }), 'unknown');
+  assert.equal(decodeSabbath(profile({ ...booleanSpec, mode: ['w'] }), { sabbath: { sabbathMode: true } }), 'unknown');
+  assert.equal(decodeSabbath(profile('ON'), { sabbath: { sabbathMode: 'OFF' } }), 'unknown');
+  assert.equal(decodeSabbath(profile('ON'), { sabbath: { sabbathMode: 'ON' } }), 'on');
+  assert.equal(decodeSabbath({ property: {} }, {}), 'unknown');
+});
+test('model diagnostics use only a bounded manufacturer model, never private aliases or IDs', async () => {
+  const getResult = info => probe(env, mock([[{ ...devices[0], deviceInfo: { ...devices[0].deviceInfo, ...info } }], profile(spec), {}]));
+  assert.equal((await getResult({ modelName: 'LRFVC2406S.ASTCNA0' })).modelName, 'LRFVC2406S.ASTCNA0');
+  for (const value of [undefined, null, '', 'private home address', 'secret\nline', 'x'.repeat(81), { private: true }]) {
+    const result = await getResult({ modelName: value, serialNumber: 'PRIVATE_SERIAL' });
+    assert.equal(result.modelName, null);
+    assert.ok(!JSON.stringify(result).includes('PRIVATE'));
+  }
+});
 test('redirects and denial stop without retry, alternate identity or leaked response', async () => {
   for (const status of [302, 400, 401, 403, 429, 500]) {
     const calls = [];
@@ -112,3 +144,4 @@ test('oversized, malformed and application-error responses fail without raw outp
     assert.equal(result.status, 'failed'); assert.ok(!JSON.stringify(result).includes('PRIVATE'));
   }
 });
+
