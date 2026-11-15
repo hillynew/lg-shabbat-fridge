@@ -20,10 +20,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p scripts test
-          curl --fail --silent --show-error --proto '=https' --max-time 30 'https://raw.githubusercontent.com/hillynew/lg-shabbat-fridge/c44fb7ac73699726508c4fb7a1668bfdc827e36e/scripts/probe-official.mjs' -o scripts/probe-official.mjs
-          curl --fail --silent --show-error --proto '=https' --max-time 30 'https://raw.githubusercontent.com/hillynew/lg-shabbat-fridge/c44fb7ac73699726508c4fb7a1668bfdc827e36e/test/official-probe.test.mjs' -o test/official-probe.test.mjs
-          echo 'c3f979a13601cc934496e40bd0b616d1031690ea540e9558877096c04b18d5bb  scripts/probe-official.mjs' | sha256sum --check -
-          echo '38c6c260690c7b68407a00981b8eb4bb5c2d2537a54bd4d2b506d314818e57d8  test/official-probe.test.mjs' | sha256sum --check -
+          curl --fail --silent --show-error --proto '=https' --max-time 30 'https://raw.githubusercontent.com/hillynew/lg-shabbat-fridge/97965ded61f1de5ab45540ad81b754c48a5ae3fb/scripts/probe-official.mjs' -o scripts/probe-official.mjs
+          curl --fail --silent --show-error --proto '=https' --max-time 30 'https://raw.githubusercontent.com/hillynew/lg-shabbat-fridge/97965ded61f1de5ab45540ad81b754c48a5ae3fb/test/official-probe.test.mjs' -o test/official-probe.test.mjs
+          echo '4262746c1cf18521aec17820c788bad6015b8dd054e0e9a93e243a4b6548d582  scripts/probe-official.mjs' | sha256sum --check -
+          echo '543cd23c10e712b6a8334cd0d6247be963b075dbef560ad8890b9a44513b14f8  test/official-probe.test.mjs' | sha256sum --check -
       - name: Test diagnostic without credentials
         run: node --test test/official-probe.test.mjs
       - name: Read official device capabilities and state
