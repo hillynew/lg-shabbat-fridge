@@ -1,9 +1,7 @@
 name: Existing LG session status check
 
 on:
-  push:
-    branches: [recovery/existing-session-check]
-    paths: [.github/workflows/existing-session-check.yml]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,7 +12,7 @@ concurrency:
 
 jobs:
   probe:
-    if: github.actor == 'hillynew' && github.run_attempt == 1
+    if: ${{ false }} # Retired after the recorded one-time attempt.
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
