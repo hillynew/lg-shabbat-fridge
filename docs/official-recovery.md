@@ -1,32 +1,41 @@
-# Official connection recovery — 2026-11-15
+# Official connection recovery — November 15, 2026
 
-The unofficial LG dashboard rejected the November 13 one-time ON attempt with HTTP 400 / LG 9006, before any control request. Do not work around that denial by rotating client IDs or changing networks. The old manual ON workflow is expired and disabled.
+## Verified result
 
-## Current safeguards
+LG's official API connection now succeeds. The account lists exactly one refrigerator. Its official device ID differs from the old unofficial configured ID. In an explicitly read-only discovery check, LG's profile reports Sabbath mode present and readable, but **not writable**. The state value was not recognized by the diagnostic's strict ON/OFF decoder, so physical Sabbath state and freshness remain unknown.
 
-Verified November 15 in the dashboards: GitHub's Shabbat tick and one-time ON workflows are disabled. Cloudflare has SHABBAT_HOLD=true, SHABBAT_WORKER_WRITES=false, no cron triggers, and builds disabled. No fridge control command was sent during this recovery work.
+[Successful live check, November 15 at 16:52 UTC](https://github.com/hillynew/lg-shabbat-fridge/actions/runs/43737884503), job 132884408023:
 
-## Read-only next step
+```json
+{"status":"read_complete","controlRequests":0,"deviceCount":1,"refrigeratorCount":1,"configuredIdMatched":false,"capability":{"present":true,"readable":true,"writable":false,"enumPair":null},"reportedMode":"unknown","freshnessVerified":false,"automationReady":false}
+```
 
-The manual **Official LG read-only check** workflow downloads the diagnostic and its tests from immutable commit 0b9248e77f2d18ea9467d4793492cc94a891c1c1 and verifies both SHA-256 digests before running. It has no schedule and no GitHub token permissions.
+No fridge control command was sent. This is a successful diagnostic, not working automated Sabbath control. The official API cannot switch this reported read-only property. The earlier unofficial API rejected the November 13 ON attempt with HTTP 400 / LG 9006, before a control request. Do not evade that denial with client-ID rotation or network changes. The old one-time ON workflow is expired and disabled.
 
-The check uses only three GET requests to LG's official US API, with an 8-second deadline per request, a bounded response body, and no redirects or retries. It matches the configured device ID exactly, checks the refrigerator type, and reads the exact `property.sabbath.sabbathMode` profile. Write support requires an explicit write mode; enum order is never interpreted as ON/OFF. Its output omits credentials, device IDs, aliases, raw profiles, and raw upstream error messages.
+## Credentials and safeguards
 
-Required encrypted GitHub Actions secrets:
+After the owner's explicit approval, the existing LG token named Shabbat was saved as the encrypted GitHub Actions secret THINQ_PAT, together with a separately generated stable THINQ_CLIENT_ID. No credential values were added to source, PR text, or workflow logs. The official token has not been transferred to Cloudflare.
 
-- THINQ_PAT: the existing LG token for this project, subject to the owner's approval to transfer it to GitHub.
-- THINQ_CLIENT_ID: one UUID generated once for this official API client; reuse it between requests and runs.
-- THINQ_DEVICE_ID: optional, only if the official API uses a different device ID. Otherwise the check matches the existing THINQ_V2_DEVICE_ID. A missing match stops; it never selects another appliance automatically.
+Verified November 15: GitHub's Shabbat tick and one-time ON workflows are disabled. Cloudflare remains SHABBAT_HOLD=true, SHABBAT_WORKER_WRITES=false, with no cron triggers and builds disabled. No new deployment, paid resource, or schedule activation occurred during recovery.
 
-The existing token named Shabbat is visible in the authenticated LG portal, but it has not been copied or saved by this recovery work. No token value belongs in source, PR text, logs, or chat.
+## Diagnostic implementation
 
-A successful read is **not** activation approval or proof of physical state: freshness remains unverified, and automationReady is always false. If LG exposes Sabbath as read-only, the official API cannot automate it; investigate that model's supported built-in Sabbath scheduling instead. Do not fall back to a blocked unofficial endpoint.
+The manual **Official LG read-only check** workflow pins diagnostic source and tests to immutable commit c44fb7ac73699726508c4fb7a1668bfdc827e36e and verifies SHA-256 digests. It has no schedule and no GitHub token permissions. Credentials are available only in its final diagnostic step, after the downloaded diagnostic's tests pass.
 
-Before activating any replacement: establish actual capability, validate state freshness and read-back behavior, safely test an explicitly requested change, verify the free plan and production limits, configure alerts and calendar renewal, and use only one active controller.
+The check makes at most three GET requests to LG's official US API. Each request has an 8-second deadline and a 512 KiB response bound; redirects and denials stop without retries. Normal operation requires the configured ID. THINQ_PROBE_DISCOVER=true permits reading the account's sole refrigerator if the old ID is absent. That diagnostic fallback does not confirm a control target, save its ID, or grant permission for future writes. Multiple refrigerators, duplicate matches, unsafe IDs, and mismatched appliance types stop.
 
-## Validation
+Only normalized capability and state flags/counts are logged. Credentials, device IDs, aliases, raw profiles, and raw error messages are omitted. No enum order or unknown value is interpreted as OFF. automationReady and freshnessVerified always remain false.
 
-42 local tests passed: 30 existing Worker/calendar tests and 12 new diagnostic tests. The new tests cover exact target selection, read-only profiles, malformed profiles, unknown state, credential redaction, HTTP denial/redirects without retries, response limits, and deadlines through body consumption. Live official API access has not yet been tested.
+44 local tests passed: 30 existing Worker/calendar tests plus 14 diagnostic tests. CI for the pinned source and the subsequent workflow-pin commit passed. The live run also passed its source-digest checks and all 14 credential-free diagnostic tests.
+
+## Next supported route
+
+Determine the exact refrigerator model and inspect its LG ThinQ **Smart Sabbath** screen. LG documents built-in Sabbath scheduling on some models; support and Shabbos/Yom Tov timing have not been verified for this refrigerator. Do not activate the custom controller based on a successful read-only diagnostic.
+
+Official LG reference (model example, not confirmation of this household's model):
+https://media.us.lg.com/m/245831b94781de3d/original/SRFVC2406S-Owners-Manual.pdf
+
+If a future supported writable interface is available, activation still requires target confirmation, state freshness and read-back validation, an explicitly authorized safe control test, free-plan and production-limit checks, alerts, calendar renewal, and only one active controller.
 
 Schema and request headers follow LG's official SDK:
 - https://github.com/thinq-connect/pythinqconnect/blob/main/thinqconnect/thinq_api.py
