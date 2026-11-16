@@ -28,4 +28,4 @@ jobs:
           THINQ_V2_CLIENT_ID: ${{ secrets.THINQ_V2_CLIENT_ID }}
           THINQ_V2_DEVICE_ID: ${{ secrets.THINQ_V2_DEVICE_ID }}
           THINQ_V2_SABBATH_CTRL: ${{ secrets.THINQ_V2_SABBATH_CTRL }}
-        run: node scripts/test-control-cycle.mjs
+        run: node scripts/commission-control-cycle.mjs

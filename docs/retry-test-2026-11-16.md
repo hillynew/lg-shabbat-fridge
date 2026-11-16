@@ -21,10 +21,16 @@ Two control requests were sent in total and the fridge was left OFF. "Verified" 
 - A freshly rotated id was itself rejected once (on the first control request), so a controller needs the retry on every request, not a single rotation at start-up.
 - The dashboard snapshot timestamp is not a heartbeat: it was 74 minutes old before the test and updated within seconds of each command.
 
+## Follow-up in the Worker code
+
+- `worker/lg.js` now retries a 9006/9012 once with a fresh client id, capped at three rotations per invocation.
+- `worker/reconcile.js` no longer requires a snapshot under three minutes old, which would have failed nearly every tick. It verifies a command by a newer snapshot, polling for up to 18 seconds.
+- The Worker contacts LG only around span boundaries (see `free-worker.md`), so ordinary-day manual changes are left alone.
+
 ## Not done
 
-- The Cloudflare Worker (`feat/free-worker-shadow`) still keeps the client id fixed and remains held with no cron.
+- Nothing is deployed or activated. The checked-in flags are still held with writes off.
 - `Shabbat mode tick` remains disabled.
-- No failure alerting exists.
+- The failure alert needs a Healthchecks.io URL set as the Worker secret `SHABBAT_HEALTHCHECKS_URL`.
 
 The test workflow `retry-cycle-once.yml` is retired with a false job gate.

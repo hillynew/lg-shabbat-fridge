@@ -102,12 +102,12 @@ alert reaches the owner.
 4. Set `SHABBAT_HOLD=false`, retaining `SHABBAT_WORKER_WRITES=false` and writer `github`.
    Confirm LG gateway custom-port connectivity, authentication, model enums, and
    dashboard schema without issuing any appliance command.
-5. **Activation blocked until real schema validation:** the adapter requires
-   `device.online === true` and `device.snapshot.timestamp` as epoch milliseconds
-   or a parseable date string. Confirm these fields exist and describe a device
-   observation (not just a server cache time), with documented clock accuracy.
-   Other formats/missing fields deliberately fail closed. Do not relax freshness
-   to make it work. Add a redacted fixture and adapter tests if normalization is needed.
+5. **Schema, validated live on 2026-11-16** (see `retry-test-2026-11-16.md`): the
+   adapter requires `device.online === true` and `device.snapshot.timestamp` as epoch
+   milliseconds or a parseable date string. The timestamp is the fridge's last
+   reported change, not a heartbeat: it was 74 minutes old while the fridge was
+   online, then moved within 5 seconds of each command. Other formats/missing
+   fields deliberately fail closed.
 6. Watch actual production CPU, errors and cadence for a representative period,
    including cold starts, full dashboard payload, retries and readback path. Successful
    build/local tests do not satisfy this gate. Confirm CPU stays safely below Free's
@@ -116,15 +116,16 @@ alert reaches the owner.
 Logs contain event, timestamp, duration, status, booleans or fixed safe error codes,
 including HTTP status and known LG rejection codes. A failed invocation throws and is
 visible in Cron/Worker logs. Dashboard snapshots are not physical confirmation. An
-online, known state must carry a timestamp no more than three minutes old and never
-in the future. A stale snapshot gets one more read after 1.5 seconds. Readback
-requires a timestamp strictly newer than both the initial snapshot and command
-start. Inspect the actual fridge for the first authorized transition.
+online, known state must carry a valid timestamp no more than a minute in the
+future; its age is not limited, because it only moves when the fridge reports.
+Readback requires a timestamp strictly newer than the snapshot read before the
+command. Inspect the actual fridge for the first authorized transition.
 
 ## Verify alerts in shadow mode
 
 An optional `SHABBAT_HEALTHCHECKS_URL` Worker secret enables [Healthchecks.io](https://healthchecks.io/docs/http_api/).
 Use the check's base UUID ping URL, with the expected period set to three minutes
+(every tick pings, including held and idle ones)
 and grace time chosen from observed run durations and schedule delays. The Worker
 sends bodyless start, success, or failure pings. A missed schedule produces no
 start ping. A failed tick reports failure and stays failed in the Worker logs.
@@ -154,9 +155,11 @@ same-state duplicate commands are idempotent, but execution is not serialized.
 The schedule is rechecked immediately before a write, and writes within 30 seconds
 before any boundary are deferred. LG can still apply an in-flight command late.
 No exactly-once or transactional guarantee is claimed. Requests abort after 8 seconds;
-uncertain writes are never repeated, only read back up to three times, spaced
-1.5 seconds apart. Stop the invocation on LG access rejection, throttling, or an
-explicit challenge. The configured client ID stays fixed.
+uncertain writes are never repeated, only read back up to six times, spaced
+3 seconds apart. An LG 9006/9012 rejection means the request was not acted on:
+the adapter mints a fresh client ID and repeats that one request once, at most
+three times per invocation. Stop the invocation on any other access rejection,
+throttling, an explicit challenge, or a 9006 that survives its retry.
 The next Cron reconciles failures rather than looping for an hour.
 
 For a manual override, deploy `SHABBAT_HOLD=true` and let old invocations drain
@@ -165,8 +168,14 @@ automation should resume. For a planned automatic resumption, set
 `SHABBAT_HOLD=false` and `SHABBAT_HOLD_UNTIL` to a future UTC timestamp with
 whole seconds, for example `2027-01-04T15:00:00Z`. The absolute hold takes
 precedence if enabled. Once the timed hold expires, the next tick resumes
-reconciliation under the existing writer and write-enable flags. An LG-app manual
-change without a hold may be undone at the next tick. A binding change does not
+reconciliation under the existing writer and write-enable flags.
+
+The Worker only contacts LG when a transition could be pending: every tick for
+30 minutes after a span starts or ends, then once an hour for the rest of the
+span and for 24 hours after it ends. All other ticks are `idle` and make no LG
+request. So a manual change in the LG app on an ordinary day is left alone
+without any hold. A manual change inside a span, or within 24 hours after one
+ends, is undone within the hour unless a hold is set. A binding change does not
 cancel invocations already running.
 
 Rollback: hold/disable Worker and drain it first, then re-enable exactly one previous

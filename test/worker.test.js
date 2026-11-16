@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { reconcile, scheduleAt, knownState } from '../worker/reconcile.js';
+import { reconcile, scheduleAt, knownState, dueAt } from '../worker/reconcile.js';
 import { buildSchedule } from '../worker/calendar.js';
 import { run, runScheduled } from '../worker/index.js';
 import { createLG } from '../worker/lg.js';
@@ -39,26 +39,38 @@ test('default shadow and writer gate never write', async () => {
 test('hold preserves manual overrides without reads or writes', async () => {
   assert.equal((await reconcile({ ...base, hold: true, read: () => assert.fail(), write: () => assert.fail() })).status, 'held');
 });
-test('unknown, offline, stale and future timestamps fail closed', () => {
-  assert.equal(knownState({ ...state(false), updatedAt: now - 180000 }, now), false);
-  for (const value of [{ on: null }, { ...state(false), online: false }, { ...state(false), updatedAt: now - 180001 }, { ...state(false), updatedAt: now + 1 }, { on: true, online: true }]) assert.throws(() => knownState(value, now));
+test('unknown, offline, undated and future states fail closed; snapshot age alone does not', () => {
+  assert.equal(knownState({ ...state(false), updatedAt: now - 6 * 3600000 }, now), false);
+  assert.equal(knownState({ ...state(true), updatedAt: now + 60000 }, now), true);
+  for (const value of [{ on: null }, { ...state(false), online: false }, { ...state(false), updatedAt: now + 60001 }, { on: true, online: true }]) assert.throws(() => knownState(value, now));
 });
 test('failed initial read stops before a command', async () => {
   let reads = 0;
   await assert.rejects(reconcile({ ...base, read: async () => { reads++; throw new Error('dashboard_failure'); }, write: () => assert.fail() }), /dashboard_failure/);
   assert.equal(reads, 1);
 });
-test('stale online status gets one spaced re-read and never triggers a write on its own', async () => {
-  const stale = { ...state(false), updatedAt: now - 180001 };
-  for (const second of [stale, state(true)]) {
-    const observations = [stale, second], sleeps = [];
-    const attempt = reconcile({ ...base, read: async () => observations.shift(),
-      sleep: async ms => sleeps.push(ms), write: () => assert.fail() });
-    if (second === stale) await assert.rejects(attempt, /state_unknown_or_stale/);
-    else assert.equal((await attempt).status, 'unchanged');
-    assert.deepEqual(sleeps, [1500]);
-    assert.equal(observations.length, 0);
-  }
+test('an old snapshot is acted on once and verified only by a newer one', async () => {
+  const old = now - 74 * 60000;
+  let reads = 0, writes = 0;
+  const result = await reconcile({ ...base, read: async () => ++reads === 1 ? { ...state(false), updatedAt: old } : state(true), write: async () => { writes++; } });
+  assert.equal(result.status, 'verified'); assert.equal(writes, 1); assert.equal(reads, 2);
+});
+const day = 86400000, hour = 3600000;
+const week = { spans: [{ on: 10 * day, off: 11 * day + 7 * hour }, { on: 17 * day, off: 18 * day + 7 * hour }] };
+test('the fridge is contacted only when a transition could be pending', () => {
+  const [a, b] = week.spans;
+  const hourly = t => { let n = 0; for (let i = 0; i < 20; i++) n += dueAt(week, t + i * 180000); return n; };
+  assert.equal(dueAt(week, a.on - 1), false);                       // before the first span: never
+  for (const edge of [a.on, a.off, b.on]) for (let t = edge; t < edge + 30 * 60000; t += 180000) assert.equal(dueAt(week, t), true); // every tick after a boundary
+  assert.equal(hourly(a.on + 5 * hour), 1);                         // inside a span: once an hour
+  assert.equal(hourly(a.off + 5 * hour), 1);                        // for a day after it ends: once an hour
+  assert.equal(hourly(a.off + 25 * hour), 0);                       // ordinary days: never
+  assert.equal(dueAt(week, b.on - 180000), false);
+});
+test('an idle tick makes no LG request and leaves a manual change alone', async () => {
+  const idle = { ...schedule, validFrom: now - 4 * day, validUntil: now + 6 * day, spans: [{ on: now - 3 * day, off: now - 2 * day }, { on: now + 4 * day, off: now + 5 * day }] };
+  const result = await reconcile({ ...base, schedule: idle, read: () => assert.fail(), write: () => assert.fail() });
+  assert.deepEqual(result, { status: 'idle', desired: false });
 });
 test('single write followed by readback verification', async () => {
   let reads = 0, writes = 0, time = now;
@@ -74,10 +86,10 @@ test('uncertain write is not retried; readback resolves success', async () => {
     write: async () => { writes++; throw new Error('timeout'); } });
   assert.equal(result.status, 'verified_after_uncertain_write'); assert.equal(writes, 1);
 });
-test('failed write/readback is a failed invocation after exactly three reads', async () => {
+test('failed write/readback is a failed invocation after a bounded number of reads', async () => {
   let reads = 0, writes = 0;
   await assert.rejects(reconcile({ ...base, read: async () => { reads++; return state(false); }, write: async () => { writes++; throw new Error('failed'); } }), /write_unverified/);
-  assert.equal(writes, 1); assert.equal(reads, 4);
+  assert.equal(writes, 1); assert.equal(reads, 7);
 });
 test('access rejection stops further requests during a write or readback', async () => {
   const rejection = Object.assign(new Error('lg_request_rejected'), { accessRejected: true });
@@ -167,20 +179,47 @@ test('LG adapter preserves gateway base path, reuses token and writes only selec
   assert.deepEqual(JSON.parse(calls[3].options.body).dataSetList, { refState: { sabbathMode: 'ON', temperature: 'IGNORE' } });
   assert.equal(calls.length, 4);
 });
-test('LG 9006 is logged in both HTTP response forms with no retry or identity change', async () => {
+function rejecting(reject, status = 400) {
+  const seen = [], logs = [];
+  const client = createLG(lgEnv(), (url, options) => requestJson(url, options, async () => {
+    if (url.includes('gateway-uri')) return Response.json({ resultCode: '0000', result: { thinq2Uri: 'https://aic.lgthinq.com/v2' } });
+    if (url.includes('oauth2/token')) return Response.json({ access_token: 'FAKE_ACCESS' });
+    const call = { id: options.headers['x-client-id'], write: options.method === 'POST' };
+    seen.push(call);
+    if (reject(call)) return Response.json({ resultCode: '9006', result: 'PRIVATE_RESPONSE' }, { status });
+    return Response.json({ resultCode: '0000', result: { item: [{ deviceId: 'FAKE_DEVICE', online: true, snapshot: { timestamp: now, refState: { sabbathMode: 'OFF' } } }] } });
+  }), line => logs.push(JSON.parse(line)));
+  return { client, seen, logs };
+}
+test('LG 9006 in either HTTP form is retried once with a fresh client id, which is then kept', async () => {
   for (const status of [200, 400]) {
-    const ids = [], logs = [];
-    const client = createLG(lgEnv(), (url, options) => requestJson(url, options, async () => {
-      if (url.includes('gateway-uri')) return Response.json({ resultCode: '0000', result: { thinq2Uri: 'https://aic.lgthinq.com/v2' } });
-      if (url.includes('oauth2/token')) return Response.json({ access_token: 'FAKE_ACCESS' });
-      ids.push(options.headers['x-client-id']);
-      return Response.json({ resultCode: '9006', result: 'PRIVATE_RESPONSE' }, { status });
-    }), line => logs.push(line));
-    await assert.rejects(client.read(), { message: 'lg_dashboard_request_failed', accessRejected: true });
-    assert.deepEqual(ids, ['FAKE_CLIENT']);
-    assert.deepEqual(logs.map(JSON.parse), [{ event: 'lg_request_failed', stage: 'dashboard',
-      reason: status === 400 ? 'http' : 'lg', httpStatus: status === 400 ? 400 : null, lgCode: '9006' }]);
+    const t = rejecting(call => call.id === 'FAKE_CLIENT', status);
+    assert.equal((await t.client.read()).on, false);
+    await t.client.write(true);
+    assert.equal(t.seen.length, 3); assert.match(t.seen[1].id, /^[0-9a-f]{64}$/); assert.equal(t.seen[2].id, t.seen[1].id);
+    assert.deepEqual(t.logs.filter(l => l.event !== 'lg_read_metadata'), [
+      { event: 'lg_request_failed', stage: 'dashboard', reason: status === 400 ? 'http' : 'lg', httpStatus: status === 400 ? 400 : null, lgCode: '9006' },
+      { event: 'lg_client_id_rotated', stage: 'dashboard', lgCode: '9006', rotations: 1 }]);
   }
+});
+test('a rejected write is repeated once with a new id; other failures are never repeated', async () => {
+  const t = rejecting(call => call.write && call.id === 'FAKE_CLIENT');
+  await t.client.write(true);
+  assert.deepEqual(t.seen.map(c => c.write), [true, true]); assert.notEqual(t.seen[1].id, 'FAKE_CLIENT');
+  let posts = 0;
+  const plain = createLG(lgEnv(), async (url, options) => {
+    if (url.includes('gateway-uri')) return { resultCode: '0000', result: { thinq2Uri: 'https://aic.lgthinq.com/v2' } };
+    if (url.includes('oauth2/token')) return { access_token: 'FAKE_ACCESS' };
+    posts++; throw Object.assign(new Error('timeout'), { kind: 'timeout' });
+  });
+  await assert.rejects(plain.write(true), /lg_write_request_failed/); assert.equal(posts, 1);
+});
+test('a persistent 9006 is terminal after one retry and rotations are capped per invocation', async () => {
+  const t = rejecting(() => true);
+  for (let i = 0; i < 3; i++) await assert.rejects(t.client.read(), { message: 'lg_dashboard_request_failed', accessRejected: true });
+  assert.equal(t.seen.length, 6);
+  await assert.rejects(t.client.read(), { accessRejected: true }); assert.equal(t.seen.length, 7);
+  assert.ok(!JSON.stringify(t.logs).includes('PRIVATE_RESPONSE'));
 });
 test('held schedule needs no LG credentials', async () => {
   const result = await run({ SHABBAT_SCHEDULE_JSON: JSON.stringify(schedule), SHABBAT_SCHEDULE_SHA256: createHash('sha256').update(JSON.stringify(schedule)).digest('hex') }, { clock: () => now, log: () => {} });
@@ -189,11 +228,11 @@ test('held schedule needs no LG credentials', async () => {
 test('runtime rejects a missing weekly span and uncovered far edge', () => {
   assert.throws(() => scheduleAt({ ...schedule, validUntil: now + 15 * 86400000 }, now), /calendar_invalid/);
 });
-test('desired-state snapshot at or before command start cannot verify a write', async () => {
+test('a desired-state snapshot no newer than the one read before the command cannot verify it', async () => {
   for (const updatedAt of [now - 1000, now]) {
     let calls = 0;
     await assert.rejects(reconcile({ ...base, read: async () => ++calls === 1 ? state(false) : { ...state(true), updatedAt }, write: async () => {} }), /write_unverified/);
-    assert.equal(calls, 4);
+    assert.equal(calls, 7);
   }
 });
 test('writes near next boundary are deferred', async () => {

@@ -10,7 +10,7 @@ LG's official API connection now succeeds. The account lists exactly one refrige
 {"status":"read_complete","controlRequests":0,"deviceCount":1,"refrigeratorCount":1,"configuredIdMatched":false,"modelName":"2RES1VE41PFA2","capability":{"present":true,"readable":true,"writable":false,"enumPair":null},"reportedMode":"off","freshnessVerified":false,"automationReady":false}
 ```
 
-No fridge control command was sent. This is a successful diagnostic, not working automated Sabbath control. The official API cannot switch this reported read-only property. The earlier unofficial API rejected the November 13 ON attempt with HTTP 400 / LG 9006, before a control request. Do not evade that denial with client-ID rotation or network changes. The old one-time ON workflow is expired and disabled.
+No fridge control command was sent. This is a successful diagnostic, not working automated Sabbath control. The official API cannot switch this reported read-only property. The earlier unofficial API rejected the November 13 ON attempt with HTTP 400 / LG 9006, before a control request. At the time this note said not to answer that denial with client-ID rotation; the owner authorized restoring the original controller's rotation on November 16 and it worked (see `retry-test-2026-11-16.md`). The old one-time ON workflow is expired and disabled.
 
 ## Credentials and safeguards
 

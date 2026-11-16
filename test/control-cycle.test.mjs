@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cycle, controlSpec, controlPayload, createClient } from '../scripts/test-control-cycle.mjs';
+import { cycle, controlSpec, controlPayload, createClient } from '../scripts/commission-control-cycle.mjs';
 import { ProbeError } from '../scripts/probe-existing-session.mjs';
 
 const start = Date.parse('2026-11-15T23:00:00Z');

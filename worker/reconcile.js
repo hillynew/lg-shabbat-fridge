@@ -1,6 +1,30 @@
 // Pure one-shot controller. No catch-up loop and no guessed state.
-const maxSnapshotAgeMs = 3 * 60_000;
-const readSpacingMs = 1_500;
+// LG's snapshot timestamp only moves when the fridge reports a change (it was
+// 74 minutes old, then updated within 5 s of each command, on 2026-11-16). So
+// its age says nothing about liveness: `online` does. A command is verified
+// by a snapshot strictly newer than the one read before it.
+const futureToleranceMs = 60_000;
+const readSpacingMs = 3_000;
+const verifyReads = 6;
+// LG is only contacted when a transition could be pending, so an ordinary-day
+// manual change is left alone and LG sees a few dozen requests a day, not ~500.
+const tickMs = 3 * 60_000; // must match the Cron cadence
+const burstMs = 30 * 60_000; // every tick right after a boundary
+const hourlyTicks = 20; // then one tick in 20
+const offWatchMs = 24 * 3_600_000; // keep enforcing OFF this long after a span
+
+// Whether this tick should contact the fridge at all.
+export function dueAt(schedule, now) {
+  let since = Infinity;
+  let inside = false;
+  for (const span of schedule.spans) {
+    if (now >= span.on && now < span.off) { inside = true; since = now - span.on; }
+    else if (now >= span.off) since = Math.min(since, now - span.off);
+  }
+  if (since < burstMs) return true;
+  if (inside || since < offWatchMs) return Math.floor(now / tickMs) % hourlyTicks === 0;
+  return false;
+}
 
 export function scheduleAt(schedule, now) {
   if (!schedule || schedule.version !== 1 || !Number.isFinite(now)
@@ -22,8 +46,7 @@ export function scheduleAt(schedule, now) {
 
 export function knownState(state, now) {
   if (typeof state?.on !== 'boolean' || state.online !== true
-      || !Number.isFinite(state.updatedAt) || state.updatedAt > now
-      || now - state.updatedAt > maxSnapshotAgeMs) throw new Error('state_unknown_or_stale');
+      || !Number.isFinite(state.updatedAt) || state.updatedAt > now + futureToleranceMs) throw new Error('state_unknown_or_stale');
   return state.on;
 }
 
@@ -31,15 +54,9 @@ export async function reconcile({ schedule, now, clock = () => now, read, write,
   enabled = false, owner = '', hold = true, sleep = ms => new Promise(r => setTimeout(r, ms)) }) {
   const desired = scheduleAt(schedule, now); // invalid calendar ALWAYS blocks writes, including OFF
   if (hold) return { status: 'held', desired };
-  let initial = await read();
-  let observedAt = clock();
-  if (initial?.online === true && typeof initial.on === 'boolean' && Number.isFinite(initial.updatedAt)
-      && observedAt - initial.updatedAt > maxSnapshotAgeMs) {
-    await sleep(readSpacingMs);
-    initial = await read();
-    observedAt = clock();
-  }
-  const current = knownState(initial, observedAt);
+  if (!dueAt(schedule, now)) return { status: 'idle', desired };
+  const initial = await read();
+  const current = knownState(initial, clock());
   if (current === desired) return { status: 'unchanged', desired };
   if (!enabled || owner !== 'cloudflare') return { status: 'shadow', desired, current };
   // Re-evaluate at the last possible moment. Never apply an expired/old decision.
@@ -55,11 +72,11 @@ export async function reconcile({ schedule, now, clock = () => now, read, write,
     if (error?.accessRejected) throw error;
     uncertain = true;
   }
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < verifyReads; attempt++) {
     await sleep(readSpacingMs);
     try {
       const observed = await read();
-      if (knownState(observed, clock()) === desired && observed.updatedAt > Math.max(initial.updatedAt, writeStarted)) {
+      if (knownState(observed, clock()) === desired && observed.updatedAt > initial.updatedAt) {
         return { status: uncertain ? 'verified_after_uncertain_write' : 'verified', desired };
       }
     } catch (error) {

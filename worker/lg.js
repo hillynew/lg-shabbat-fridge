@@ -1,10 +1,16 @@
 // Minimal runtime-only LG app-channel adapter. No login/password flow or process.env.
-import { createHmac, randomUUID } from 'node:crypto';
+//
+// LG answers some app-channel requests with 9006/9012 ("consider using the
+// official API"). As in src/thinqV2.js and upstream wideq, that rejection is
+// answered by minting a fresh client id and repeating that one request once.
+// A 9006 means LG did not act on the request, so repeating a write is safe.
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { requestJson } from './http.js';
 const gatewayURL = 'https://route.lgthinq.com:46030/v1/service/application/gateway-uri';
 const authPath = '/oauth/1.0/oauth2/token';
 const publicAppKey = 'LGAO221A02';
 const publicSigningKey = 'c053c2a6ddeb7ad97cb0eed0dcb31cf8';
+export const maxRotations = 3; // per invocation
 
 function lgURL(value) {
   const url = new URL(value);
@@ -42,7 +48,8 @@ export function createLG(env, request = requestJson, observe = () => {}) {
       || !ctrl.templateKeys.includes('sabbathMode') || !Array.isArray(ctrl.path) || !ctrl.path.length
       || [...ctrl.templateKeys, ...ctrl.path].some(k => typeof k !== 'string' || ['__proto__', 'constructor', 'prototype'].includes(k))) throw new Error('lg_control_invalid');
   let session;
-  const clientId = env.THINQ_V2_CLIENT_ID;
+  let clientId = env.THINQ_V2_CLIENT_ID;
+  let rotations = 0;
   const headers = () => ({ Accept: 'application/json', 'Content-type': 'application/json;charset=UTF-8',
     'x-api-key': 'VGhpblEyLjAgU0VSVklDRQ==', 'x-client-id': clientId,
     'x-country-code': 'US', 'x-language-code': 'en-US', 'x-message-id': randomUUID(),
@@ -60,6 +67,7 @@ export function createLG(env, request = requestJson, observe = () => {}) {
         lgCode }));
       const failure = new Error('lg_' + stage + '_request_failed');
       failure.accessRejected = error?.accessRejected === true;
+      failure.lgCode = lgCode;
       throw failure;
     }
   }
@@ -80,10 +88,18 @@ export function createLG(env, request = requestJson, observe = () => {}) {
   }
   async function api(path, payload) {
     const { base, token } = await connect();
-    return stageRequest(payload ? 'write' : 'dashboard', `${base}/${path}`, { method: payload ? 'POST' : 'GET',
+    const stage = payload ? 'write' : 'dashboard';
+    const send = () => stageRequest(stage, `${base}/${path}`, { method: payload ? 'POST' : 'GET',
       headers: { ...headers(), 'x-emp-token': token, 'x-user-no': env.THINQ_V2_USER_NUMBER,
         ...(payload ? { 'x-thinq-security-key': 'nuts_securitykey' } : {}) },
       ...(payload ? { body: JSON.stringify(payload) } : {}) });
+    try { return await send(); } catch (error) {
+      if (!error?.lgCode || rotations >= maxRotations) throw error;
+      rotations++;
+      clientId = createHash('sha256').update(String(env.THINQ_V2_USER_NUMBER) + Date.now() + randomUUID()).digest('hex');
+      observe(JSON.stringify({ event: 'lg_client_id_rotated', stage, lgCode: error.lgCode, rotations }));
+      return await send();
+    }
   }
   return {
     async read() {
