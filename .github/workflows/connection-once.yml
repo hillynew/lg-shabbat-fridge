@@ -1,0 +1,29 @@
+name: Bounded fridge connection and control check
+on:
+  push:
+    branches: [recovery/connection-2026-11-16]
+    paths: [.github/workflows/connection-once.yml]
+permissions:
+  contents: read
+concurrency:
+  group: existing-lg-session-status
+  cancel-in-progress: false
+jobs:
+  commissioning:
+    if: github.actor == 'hillynew' && github.run_attempt == 1 && github.event.head_commit.message == 'Run authorized connection check 2026-11-16'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Verify logic without credentials
+        run: node --test test/existing-session.test.mjs test/control-cycle.test.mjs
+      - name: Verify ON then restore OFF in one existing session
+        env:
+          CONTROL_TEST_EXPIRES_AT: '2026-11-16T15:30:00Z'
+          THINQ_V2_REFRESH_TOKEN: ${{ secrets.THINQ_V2_REFRESH_TOKEN }}
+          THINQ_V2_OAUTH_URL: ${{ secrets.THINQ_V2_OAUTH_URL }}
+          THINQ_V2_USER_NUMBER: ${{ secrets.THINQ_V2_USER_NUMBER }}
+          THINQ_V2_CLIENT_ID: ${{ secrets.THINQ_V2_CLIENT_ID }}
+          THINQ_V2_DEVICE_ID: ${{ secrets.THINQ_V2_DEVICE_ID }}
+          THINQ_V2_SABBATH_CTRL: ${{ secrets.THINQ_V2_SABBATH_CTRL }}
+        run: node scripts/test-control-cycle.mjs
