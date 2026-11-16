@@ -48,6 +48,13 @@ test('an unverified ON is followed by exactly one restoring OFF', async () => {
     const m = setup(options); await assert.rejects(cycle(m.args), /on_unverified_off_unverified/); assert.deepEqual(m.writes, [true, false]);
   }
 });
+test('a rejected readback after ON still sends the restoring OFF, with one read each', async () => {
+  const writes = []; let reads = 0;
+  await assert.rejects(cycle({ expiresAt: start + 3600000, now: () => start, sleep: async () => {},
+    client: { read: async () => { if (reads++) throw new ProbeError('dashboard', 'http', 503); return { on: false, online: true, updatedAt: start }; },
+      write: async v => { writes.push(v); } } }), /on_unverified_off_unverified/);
+  assert.deepEqual(writes, [true, false]); assert.equal(reads, 3);
+});
 test('stale matching readback cannot verify a command', async () => {
   const writes = [];
   await assert.rejects(cycle({ expiresAt: start + 3600000, now: () => start, sleep: async () => {},

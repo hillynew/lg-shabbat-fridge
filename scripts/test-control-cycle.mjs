@@ -125,8 +125,10 @@ export async function cycle({ client, expiresAt, now = Date.now, sleep = ms => n
           return true;
         }
       } catch (error) {
-        // A rejected read is not a reason to keep querying the blocked endpoint.
-        if (rejected(error)) throw error;
+        // A rejected read is not a reason to keep querying the blocked endpoint,
+        // but the command was already sent: report it unverified so the caller
+        // can still restore OFF, rather than escaping past that cleanup.
+        if (rejected(error)) { observe({ event: 'readback_rejected', httpStatus: error.httpStatus, lgCode: error.lgCode }); break; }
       }
     }
     return false;
