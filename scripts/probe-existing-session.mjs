@@ -4,10 +4,18 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 export class ProbeError extends Error {
-  constructor(stage, kind, httpStatus = null, lgCode = null) {
+  constructor(stage, kind, httpStatus = null, lgCode = null, restriction = null) {
     super('session_probe_failed');
-    Object.assign(this, { stage, kind, httpStatus, lgCode });
+    Object.assign(this, { stage, kind, httpStatus, lgCode, restriction });
   }
+}
+
+// Classify only known provider messages; never expose arbitrary upstream text.
+export function restrictionKind(result) {
+  if (typeof result !== 'string') return null;
+  if (/temporarily blocked for 24 hours/i.test(result)) return 'temporary_24h_block';
+  if (/consider using the (official|native) API/i.test(result)) return 'official_api_required';
+  return null;
 }
 
 export async function readJSON(stage, url, options, fetcher, timeoutMs = 8000) {
@@ -35,8 +43,9 @@ export async function readJSON(stage, url, options, fetcher, timeoutMs = 8000) {
     try { json = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
     catch { throw new ProbeError(stage, 'invalid_json', response.status); }
     const code = typeof json?.resultCode === 'string' && /^\d{4}$/.test(json.resultCode) ? json.resultCode : null;
-    if (!response.ok) throw new ProbeError(stage, 'http', response.status, code);
-    if (stage !== 'token' && code !== '0000') throw new ProbeError(stage, 'lg_response', response.status, code);
+    const restriction = restrictionKind(json?.result);
+    if (!response.ok) throw new ProbeError(stage, 'http', response.status, code, restriction);
+    if (stage !== 'token' && code !== '0000') throw new ProbeError(stage, 'lg_response', response.status, code, restriction);
     return stage === 'token' ? json : json.result;
   } catch (error) {
     if (error instanceof ProbeError) throw error;
@@ -97,7 +106,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   catch (error) {
     console.log(JSON.stringify({ status: 'read_failed', stage: error instanceof ProbeError ? error.stage : 'unknown',
       kind: error instanceof ProbeError ? error.kind : 'unknown', httpStatus: error instanceof ProbeError ? error.httpStatus : null,
-      lgCode: error instanceof ProbeError ? error.lgCode : null, controlRequests: 0, identityChanges: 0, automationReady: false }));
+      lgCode: error instanceof ProbeError ? error.lgCode : null,
+      restriction: error instanceof ProbeError ? error.restriction : null,
+      controlRequests: 0, identityChanges: 0, automationReady: false }));
     process.exitCode = 1;
   }
 }
