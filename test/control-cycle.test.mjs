@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cycle, controlSpec, controlPayload, createClient } from '../scripts/test-control-cycle.mjs';
+import { ProbeError } from '../scripts/probe-existing-session.mjs';
 
 const start = Date.parse('2026-11-15T23:00:00Z');
 const spec = { controllable: true, onValue: 'ON', offValue: 'OFF', ctrl: { command: 'Set', ctrlKey: 'basicCtrl', path: ['refState'], templateKeys: ['sabbathMode', 'fridgeTemp'] } };
@@ -25,6 +26,14 @@ test('verifies ON then restores and verifies OFF with exactly two commands', asy
 });
 test('uncertain write is resolved by readback, never resubmission', async () => {
   const m = setup({ failWrite: true }); assert.equal((await cycle(m.args)).finalMode, 'off'); assert.deepEqual(m.writes, [true, false]);
+});
+test('an explicit LG rejection stops without further reads or writes', async () => {
+  let reads = 0, writes = 0;
+  const rejection = new ProbeError('control', 'http', 400, '9006', 'official_api_required');
+  await assert.rejects(cycle({ expiresAt: start + 3600000, now: () => start, sleep: async () => {},
+    client: { read: async () => { reads++; return { on: false, online: true, updatedAt: start }; },
+      write: async () => { writes++; throw rejection; } } }), e => e === rejection);
+  assert.equal(reads, 1); assert.equal(writes, 1);
 });
 test('already ON, unknown, offline or old initial status sends nothing', async () => {
   for (const options of [{ initial: true }, { initial: null }, { online: false }, { timestamp: start - 31 * 60000 }]) {
