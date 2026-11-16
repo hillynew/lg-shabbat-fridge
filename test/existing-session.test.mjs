@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { probe, readJSON } from '../scripts/probe-existing-session.mjs';
+import { probe, readJSON, restrictionKind } from '../scripts/probe-existing-session.mjs';
 
 const now = Date.parse('2026-11-15T23:00:00Z');
 const env = { THINQ_V2_REFRESH_TOKEN: 'private-refresh', THINQ_V2_OAUTH_URL: 'https://us.lgeapi.com',
@@ -10,6 +10,14 @@ const env = { THINQ_V2_REFRESH_TOKEN: 'private-refresh', THINQ_V2_OAUTH_URL: 'ht
 const ok = result => ({ resultCode: '0000', result });
 const dashboard = value => ok({ item: [{ deviceId: env.THINQ_V2_DEVICE_ID, deviceType: 101, online: true,
   snapshot: { timestamp: now, refState: { sabbathMode: value } } }] });
+test('restriction classification exposes fixed categories only', async () => {
+  assert.equal(restrictionKind('Your account has been temporarily blocked for 24 hours because repeated requests suggest automated script usage.'), 'temporary_24h_block');
+  assert.equal(restrictionKind('Please consider using the official API. Visit https://example.test/secret'), 'official_api_required');
+  assert.equal(restrictionKind('private account details'), null);
+  const m = mock(Response.json({ resultCode: '9006', result: 'Please consider using the official API. private-account' }, { status: 400 }));
+  await assert.rejects(probe(env, m.fetcher, () => now), e => e.restriction === 'official_api_required' && !JSON.stringify(e).includes('private-account'));
+  assert.equal(m.calls.length, 3);
+});
 function mock(last = dashboard('OFF')) {
   const calls = [];
   const responses = [ok({ thinq2Uri: 'https://aic-service.lgthinq.com:46030/v1' }), { access_token: 'private-access' }, last];
