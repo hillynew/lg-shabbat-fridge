@@ -84,7 +84,10 @@ export async function cycle({ client, expiresAt, now = Date.now, sleep = ms => n
     commands++;
     observe({ event: 'control_attempt', desired: desired ? 'on' : 'off', commands });
     let accepted = true;
-    try { await client.write(desired); } catch { accepted = false; }
+    try { await client.write(desired); } catch (error) {
+      if (error instanceof ProbeError && (error.kind === 'http' || error.kind === 'lg_response' || error.kind === 'redirect')) throw error;
+      accepted = false;
+    }
     let verified = null;
     for (let attempt = 0; attempt < 6; attempt++) {
       if (attempt) await sleep(3000);
@@ -119,7 +122,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   } catch (error) {
     console.log(JSON.stringify({ status: 'test_failed', reason: allowed.has(error.message) ? error.message : error instanceof ProbeError ? 'lg_request_failed' : 'unknown',
       stage: error instanceof ProbeError ? error.stage : null, httpStatus: error instanceof ProbeError ? error.httpStatus : null,
-      lgCode: error instanceof ProbeError ? error.lgCode : null, automationReady: false }));
+      lgCode: error instanceof ProbeError ? error.lgCode : null,
+      restriction: error instanceof ProbeError ? error.restriction : null, automationReady: false }));
     process.exitCode = 1;
   }
 }
