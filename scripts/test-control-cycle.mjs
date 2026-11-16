@@ -50,14 +50,27 @@ export async function createClient(env, fetcher = fetch, now = Date.now) {
   const authenticated = () => ({ ...headers(), 'x-emp-token': token.access_token, 'x-user-no': env.THINQ_V2_USER_NUMBER });
   const origin = base.toString().replace(/\/$/, '');
   let writes = 0;
+  let identified = false;
+  const stateOf = d => {
+    const raw = d.snapshot?.timestamp, mode = d.snapshot?.refState?.sabbathMode;
+    return { on: mode === spec.onValue ? true : mode === spec.offValue ? false : null, online: d.online === true,
+      updatedAt: typeof raw === 'number' ? raw : typeof raw === 'string' ? Date.parse(raw) : NaN };
+  };
   return {
     async read() {
       const result = await readJSON('dashboard', origin + '/service/application/dashboard', { method: 'GET', headers: authenticated() }, fetcher);
       const matches = result?.item?.filter(d => d.deviceId === env.THINQ_V2_DEVICE_ID) || [];
       if (matches.length !== 1 || Number(matches[0].deviceType) !== 101) throw new Error('target_mismatch');
-      const d = matches[0]; const raw = d.snapshot?.timestamp; const mode = d.snapshot?.refState?.sabbathMode;
-      return { on: mode === spec.onValue ? true : mode === spec.offValue ? false : null, online: d.online === true,
-        updatedAt: typeof raw === 'number' ? raw : typeof raw === 'string' ? Date.parse(raw) : NaN };
+      identified = true;
+      return stateOf(matches[0]);
+    },
+    async readDetailed() {
+      if (!identified) throw new Error('target_mismatch');
+      const d = await readJSON('device_status', origin + '/service/devices/' + encodeURIComponent(env.THINQ_V2_DEVICE_ID), {
+        method: 'GET', headers: authenticated(),
+      }, fetcher);
+      if (!d || d.deviceId !== env.THINQ_V2_DEVICE_ID || Number(d.deviceType) !== 101) throw new Error('target_mismatch');
+      return stateOf(d);
     },
     async write(on) {
       if (++writes > 2 || on !== (writes === 1)) throw new Error('additional_control_blocked');
@@ -71,7 +84,15 @@ export async function createClient(env, fetcher = fetch, now = Date.now) {
 export async function cycle({ client, expiresAt, now = Date.now, sleep = ms => new Promise(r => setTimeout(r, ms)), observe = () => {} }) {
   const initialNow = now();
   if (!Number.isFinite(expiresAt) || expiresAt - initialNow < 120000 || expiresAt - initialNow > 2 * 3600000) throw new Error('test_expired');
-  const initial = await client.read();
+  let initial = await client.read();
+  const report = source => observe({ event: 'initial_state', source, mode: initial.on === true ? 'on' : initial.on === false ? 'off' : 'unknown',
+    online: initial.online === true, snapshotAgeMs: Number.isFinite(initial.updatedAt) ? now() - initial.updatedAt : null });
+  report('dashboard');
+  if (initial.on === false && initial.online === true && Number.isFinite(initial.updatedAt)
+      && now() - initial.updatedAt > 30 * 60000 && client.readDetailed) {
+    initial = await client.readDetailed();
+    report('device_status');
+  }
   // The one-time ON test tolerates a last-change snapshot up to 30 minutes old.
   // Scheduled production freshness rules are not changed by this test.
   if (initial.on !== false || initial.online !== true || !Number.isFinite(initial.updatedAt)
