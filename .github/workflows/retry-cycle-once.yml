@@ -12,6 +12,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   commissioning:
+    if: ${{ false }} # Retired: completed successfully in run 43889368364.
     runs-on: ubuntu-latest
     timeout-minutes: 6
     steps:
