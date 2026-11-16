@@ -40,6 +40,16 @@ test('already ON, unknown, offline or old initial status sends nothing', async (
     const m = setup(options); await assert.rejects(cycle(m.args), /initial_off_not_confirmed/); assert.equal(m.writes.length, 0);
   }
 });
+test('a stale dashboard can use one dedicated status query; stale results still block', async () => {
+  for (const fresh of [true, false]) {
+    const m = setup({ timestamp: start - 60 * 60000 });
+    let detailReads = 0;
+    m.args.client.readDetailed = async () => { detailReads++; return { on: false, online: true, updatedAt: fresh ? start - 1000 : start - 60 * 60000 }; };
+    if (fresh) assert.equal((await cycle(m.args)).finalMode, 'off');
+    else await assert.rejects(cycle(m.args), /initial_off_not_confirmed/);
+    assert.equal(detailReads, 1); assert.deepEqual(m.writes, fresh ? [true, false] : []);
+  }
+});
 test('an unverified ON stops without another command', async () => {
   for (const options of [{ update: false }, { readFails: true }]) {
     const m = setup(options); await assert.rejects(cycle(m.args), /on_unverified_stop/); assert.deepEqual(m.writes, [true]);
