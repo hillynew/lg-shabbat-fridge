@@ -136,6 +136,26 @@ confirm recovery notification behavior. Run these exercises with appliance write
 disabled. The monitoring account, notifications, and URL secret require setup
 before this feature reports to the owner.
 
+## Deploying from GitHub
+
+`.github/workflows/deploy-worker.yml` is the only deployer. It runs on manual
+trigger from `main`, runs the tests, then `wrangler deploy`. Code, the Cron
+trigger and the three `SHABBAT_*` flags come from `wrangler.jsonc`; secrets
+already stored on the Worker are kept. Changing mode is therefore a commit to
+`wrangler.jsonc` plus one run, choosing the matching `expect` value:
+
+| Mode | `SHABBAT_HOLD` | `SHABBAT_WORKER_WRITES` | `SHABBAT_WRITER` |
+| --- | --- | --- | --- |
+| held | `true` | any | any |
+| shadow | `false` | `false` | `github` |
+| live | `false` | `true` | `cloudflare` |
+
+The run stops before deploying if the file's mode differs from `expect`. It needs
+the repository secret `CLOUDFLARE_API_TOKEN` (Cloudflare "Edit Cloudflare Workers"
+template, limited to this account). Keep Cloudflare's own automatic builds
+switched off so there is one deployer. A timed hold (`SHABBAT_HOLD_UNTIL`) set in
+the dashboard is overwritten by the next deploy unless it is also in the file.
+
 ## One-writer cutover (separate authorized step)
 
 Only proceed after all gates above, independent alerts, renewal reminder and explicit

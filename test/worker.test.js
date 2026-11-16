@@ -342,3 +342,12 @@ test('heartbeat is optional and a ping failure cannot mask the control result or
   assert.deepEqual(logs.filter(log => log.event === 'healthchecks_ping_failed').map(log => log.phase), ['start', 'success']);
   assert.ok(!JSON.stringify(logs).includes(heartbeatURL));
 });
+test('deploy mode is derived from the three flags and ambiguous combinations are refused', async () => {
+  const { workerMode } = await import('../scripts/worker-mode.js');
+  const flags = (h, w, o) => ({ SHABBAT_HOLD: h, SHABBAT_WORKER_WRITES: w, SHABBAT_WRITER: o });
+  assert.equal(workerMode(JSON.parse(fs.readFileSync('wrangler.jsonc', 'utf8')).vars), 'held');
+  assert.equal(workerMode(flags('true', 'true', 'cloudflare')), 'held');
+  assert.equal(workerMode(flags('false', 'false', 'github')), 'shadow');
+  assert.equal(workerMode(flags('false', 'true', 'cloudflare')), 'live');
+  for (const bad of [flags('false', 'true', 'github'), flags('false', 'false', 'cloudflare'), flags('no', 'false', 'github'), flags('false', 'true', 'other'), {}]) assert.throws(() => workerMode(bad));
+});

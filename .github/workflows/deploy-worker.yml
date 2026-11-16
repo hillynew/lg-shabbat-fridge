@@ -1,0 +1,49 @@
+# Manual deploy of the Cloudflare Worker from main. This is the only deployer:
+# keep Cloudflare's own automatic builds switched off.
+#
+# The Worker's code, Cron trigger and the three SHABBAT_* flags all come from
+# wrangler.jsonc, so going live (or back to held) is a reviewed commit to that
+# file followed by one run of this workflow. Secrets already stored on the
+# Worker (calendar, LG credentials, alert URL) are left untouched.
+name: Deploy Worker
+on:
+  workflow_dispatch:
+    inputs:
+      expect:
+        description: Mode you intend to deploy. The run stops if wrangler.jsonc says otherwise.
+        required: true
+        type: choice
+        options: [held, shadow, live]
+permissions:
+  contents: read
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.actor == 'hillynew' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Check the configured mode matches the intended one
+        env:
+          EXPECT: ${{ inputs.expect }}
+        run: |
+          mode=$(node scripts/worker-mode.js)
+          echo "wrangler.jsonc mode: $mode (expected: $EXPECT)"
+          test "$mode" = "$EXPECT"
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 0dd4affe020da80c4c30990a3f53ebd3
+          WRANGLER_SEND_METRICS: 'false'
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "CLOUDFLARE_API_TOKEN secret is not set"; exit 1; }
+          npx wrangler deploy
