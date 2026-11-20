@@ -1,5 +1,9 @@
 # lg-shabbat-fridge
 
+> A direct, free-tier Cloudflare Worker replacement is available in **shadow/held
+> mode only**. See [safe migration and activation gates](docs/free-worker.md).
+> The existing GitHub schedule below remains unchanged until a separate cutover.
+
 Turns an LG WiFi refrigerator's **Sabbath mode** on for every **Shabbos and
 Yom Tov** — automatically, for free, with no server to run or pay for and
 nothing external to set up. The code runs entirely on

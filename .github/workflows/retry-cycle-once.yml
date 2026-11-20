@@ -1,0 +1,31 @@
+# One-time ON/OFF commissioning test with the 9006 client-id retry restored.
+# Owner-authorized 2026-11-16. No schedule; expires and cannot be re-run.
+name: One-time retry ON-OFF test
+on:
+  push:
+    branches: [claude/new-session-44ax7w]
+    paths: [.github/workflows/retry-cycle-once.yml]
+permissions:
+  contents: read
+concurrency:
+  group: fridge-manual-command
+  cancel-in-progress: false
+jobs:
+  commissioning:
+    if: ${{ false }} # Retired: completed successfully in run 43889368364.
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Verify logic without credentials
+        run: node --test test/existing-session.test.mjs test/control-cycle.test.mjs
+      - name: Bounded ON-OFF cycle with verified restoration
+        env:
+          CONTROL_TEST_EXPIRES_AT: '2026-11-16T16:30:00Z'
+          THINQ_V2_REFRESH_TOKEN: ${{ secrets.THINQ_V2_REFRESH_TOKEN }}
+          THINQ_V2_OAUTH_URL: ${{ secrets.THINQ_V2_OAUTH_URL }}
+          THINQ_V2_USER_NUMBER: ${{ secrets.THINQ_V2_USER_NUMBER }}
+          THINQ_V2_CLIENT_ID: ${{ secrets.THINQ_V2_CLIENT_ID }}
+          THINQ_V2_DEVICE_ID: ${{ secrets.THINQ_V2_DEVICE_ID }}
+          THINQ_V2_SABBATH_CTRL: ${{ secrets.THINQ_V2_SABBATH_CTRL }}
+        run: node scripts/commission-control-cycle.mjs
