@@ -51,6 +51,7 @@ jobs:
         with:
           node-version: 20
       - name: Run tick
+        id: tick
         env:
           # Official ThinQ Connect API (preferred channel, if writable on your model)
           THINQ_PAT: ${{ secrets.THINQ_PAT }}
@@ -78,11 +79,12 @@ jobs:
           TICK_RUN_MINUTES: '330'
         run: node scripts/tick.js
       # Start the next run so checks continue without waiting for GitHub's
-      # schedule. Skipped for forced one-off runs. Only after a successful
-      # tick: a configuration error fails fast, and chaining it would
-      # restart it in a tight loop (the hourly watchdog retries instead).
+      # schedule. Only when tick.js reports a full polling run: a forced run,
+      # the SHABBAT_ENABLED=false kill switch, a missing channel or a
+      # configuration error all end early, and chaining them would start
+      # runs back to back without end (the hourly watchdog retries instead).
       - name: Chain the next run
-        if: success() && !github.event.inputs.force
+        if: steps.tick.outputs.chain == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run shabbat-tick.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"

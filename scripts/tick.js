@@ -26,6 +26,7 @@
 
 import { sabbathControlPath, setSabbathAuto, getCurrentSabbathState } from '../src/control.js';
 import { upcomingSpans } from '../src/hebcal.js';
+import { appendFileSync } from 'node:fs';
 
 const POLL_INTERVAL_MS = 3 * 60 * 1000; // check every 3 minutes
 const SPAN_REFRESH_MS = 60 * 60 * 1000; // re-fetch the Hebcal schedule hourly
@@ -118,6 +119,10 @@ async function main() {
     await sleep(POLL_INTERVAL_MS);
   }
   console.log('Run budget reached — exiting; the workflow chains the next run.');
+  // Tell the workflow a full polling run completed. Only then does it start
+  // a successor: an early return (kill switch, no channel, forced run) must
+  // not chain, or it would start runs back to back without end.
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'chain=true\n');
 }
 
 main().catch((e) => {
