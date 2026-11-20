@@ -160,28 +160,27 @@ similar works fine for a quick local test).
 
 ## The schedule (`.github/workflows/shabbat-tick.yml`)
 
-`schedule: '7 * * * *'` — once an hour, at 7 minutes past, every day of the
-week (Yom Tov can fall on any weekday, not just Friday/Saturday). The `:07`
-offset is deliberate: GitHub's docs warn that the top of every hour (`:00`)
-is when its scheduler is most congested, since that's when everyone else's
-cron jobs fire too — an earlier, much higher-frequency (`*/15`) schedule
-was confirmed live to fire only a small, irregular fraction of its
-configured times because of this. Hourly, off the round hour, is a
-well-established reliable pattern.
+Each run polls every 3 minutes for about 5.5 hours (`TICK_RUN_MINUTES=330`),
+then **starts the next run itself** (`gh workflow run`, using the job's own
+`GITHUB_TOKEN`; a `workflow_dispatch` is the documented exception that
+`GITHUB_TOKEN` is allowed to trigger). So the fridge is checked continuously,
+and the real ON/OFF moment is caught within a few minutes.
 
-Each hourly run then polls internally every 3 minutes for up to 55 minutes
-(`scripts/tick.js`), so the real ON/OFF moment still gets caught within a
-few minutes, entirely within that one job — no second trigger needed.
+The `schedule: '7 * * * *'` trigger is only a watchdog that restarts the
+chain if it breaks. It can't be relied on by itself: on this repo GitHub fired
+it just 3-4 times a day, with gaps of 6-8 hours, so the earlier design (one
+55-minute run per "hourly" trigger) covered a small part of each day and
+missed Erev Shabbos ON. A `concurrency` group keeps it to one poller at a
+time; a watchdog run that fires while the chain is alive waits as the single
+pending run. Forced on/off runs use a separate group and act immediately.
 
-At roughly 24 runs/day × ~55 minutes each, this uses well over GitHub's
-2000 free Actions minutes/month on a **private** repo. Making the repo
-**public** removes any Actions-minutes limit entirely (free and unlimited
-on public repos) — nothing sensitive is ever committed to the repo itself,
-only referenced via GitHub Secrets (encrypted at rest, never printed in
-logs). **This repo needs to be public for the schedule to run for free** —
-if you'd rather keep it private, either upgrade past the free Actions
-minutes or shorten `RUN_BUDGET_MS` in `scripts/tick.js` at the cost of
-coarser timing.
+A transient Hebcal or LG error is logged and retried at the next check rather
+than ending the run.
+
+Continuous polling is roughly 720 runner-hours a month. That is free and
+unlimited on a **public** repo; on a private repo it far exceeds the free
+Actions minutes. Nothing sensitive is committed: credentials live only in
+GitHub Secrets.
 
 ### Why not an external trigger?
 

@@ -1,24 +1,18 @@
 name: Shabbat mode tick
 
 on:
-  # Runs once an hour, offset to :07 rather than :00 — GitHub's own docs
-  # warn that the top of every hour is when its scheduler is most congested
-  # (everyone else's cron fires there too), which is the actual cause of
-  # the unreliability seen with a high-frequency `*/15` schedule tried
-  # earlier (confirmed live: gaps of 2-6+ hours between runs). Hourly, off
-  # the round hour, is a well-established reliable pattern.
+  # Coverage comes from chaining: each run polls for about 5.5 hours
+  # (TICK_RUN_MINUTES), then starts the next run itself with
+  # `gh workflow run`. A workflow_dispatch made with GITHUB_TOKEN is the
+  # documented exception that does start a new run, and it never leaves
+  # GitHub's own infrastructure.
   #
-  # Precision comes from scripts/tick.js itself: each hourly run polls
-  # internally every few minutes for the rest of the hour, so the actual
-  # ON/OFF moment still gets caught within a few minutes. Two earlier
-  # external-trigger approaches (cron-job.org, then a Cloudflare Worker
-  # relay calling GitHub's workflow_dispatch API every few minutes) were
-  # abandoned after both consistently got 404s from GitHub that were never
-  # explained — the identical request succeeded via plain curl every time,
-  # pointing at GitHub deprioritizing traffic that self-identifies as
-  # coming from an edge/serverless network. This design needs no external
-  # caller at all: nothing outside GitHub Actions' own infrastructure ever
-  # talks to GitHub's API.
+  # This hourly schedule is only a watchdog that restarts the chain if it
+  # ever breaks. On its own it was not enough: on this repo it fired just
+  # 3-4 times a day (gaps of 6-8 hours), so each 55-minute run covered a
+  # small fraction of the day and the Erev Shabbos ON was routinely missed.
+  # The concurrency group below means a watchdog run that fires while the
+  # chain is alive just waits as the single pending run and continues it.
   schedule:
     - cron: '7 * * * *'
   workflow_dispatch:
@@ -33,10 +27,24 @@ on:
           - 'off'
         default: ''
 
+# One poller at a time. GitHub keeps at most one pending run per group, so
+# extra watchdog or chained runs collapse into that single pending run.
+# Forced on/off runs use their own group so they act immediately instead of
+# queueing behind a 5.5-hour poller.
+concurrency:
+  group: ${{ github.event.inputs.force && 'shabbat-force' || 'shabbat-tick' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write   # lets the run start its successor
+
 jobs:
   tick:
     runs-on: ubuntu-latest
-    timeout-minutes: 58
+    # GitHub-hosted jobs are capped at 360 minutes; TICK_RUN_MINUTES stays
+    # well under this.
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -67,4 +75,14 @@ jobs:
           SHABBAT_ON_TIME: ${{ secrets.SHABBAT_ON_TIME }}                   # default: 12:00 local, every Erev Shabbos/Yom Tov
           SHABBAT_HAVDALAH_MINUTES: ${{ secrets.SHABBAT_HAVDALAH_MINUTES }} # default: 60 (minutes after sunset)
           FORCE: ${{ github.event.inputs.force }}
+          TICK_RUN_MINUTES: '330'
         run: node scripts/tick.js
+      # Start the next run so checks continue without waiting for GitHub's
+      # schedule. Skipped for forced one-off runs. Only after a successful
+      # tick: a configuration error fails fast, and chaining it would
+      # restart it in a tight loop (the hourly watchdog retries instead).
+      - name: Chain the next run
+        if: success() && !github.event.inputs.force
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run shabbat-tick.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"

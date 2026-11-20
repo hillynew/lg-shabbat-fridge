@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// The scheduled entry point — run once an hour by the GitHub Actions
-// workflow (offset away from :00 — the top of every hour is when GitHub's
-// scheduler is most congested and most likely to delay/drop a run), then
-// polls internally for the rest of the hour so the actual ON/OFF moment
-// still gets caught within a few minutes without needing high-frequency
-// external triggering.
+// The scheduled entry point. Each GitHub Actions run polls every few
+// minutes for TICK_RUN_MINUTES (about 5.5 hours in the workflow), then the
+// workflow starts the next run itself, so the fridge is checked
+// continuously. GitHub's own `schedule:` trigger only restarts the chain if
+// it ever breaks: on this repo it fired just 3-4 times a day, not hourly.
 //
 // Earlier versions of this tool tried to get precise timing by having an
 // external service (cron-job.org, then a Cloudflare Worker relay) call
@@ -19,9 +18,8 @@
 // GitHub Actions' own infrastructure ever talks to GitHub's API.
 //
 // Computes the real Hebrew-calendar Shabbos/Yom Tov spans for the
-// configured location (src/hebcal.js) ONCE per hourly run, then checks the
-// current moment against those spans every few minutes for the rest of the
-// run. Stateless by design: it reads the fridge's CURRENT Sabbath state
+// configured location (src/hebcal.js), refreshed hourly, and checks the
+// current moment against those spans every few minutes. Stateless by design: it reads the fridge's CURRENT Sabbath state
 // before acting and no-ops if it's already correct, so a missed run, a
 // manual flip, or the job simply running again later is always
 // self-healing.
@@ -30,7 +28,10 @@ import { sabbathControlPath, setSabbathAuto, getCurrentSabbathState } from '../s
 import { upcomingSpans } from '../src/hebcal.js';
 
 const POLL_INTERVAL_MS = 3 * 60 * 1000; // check every 3 minutes
-const RUN_BUDGET_MS = 55 * 60 * 1000; // stop with headroom before the next hourly run
+const SPAN_REFRESH_MS = 60 * 60 * 1000; // re-fetch the Hebcal schedule hourly
+// How long one run keeps polling. The workflow chains a new run when this one
+// ends, so coverage is continuous; keep it below the job's timeout-minutes.
+const RUN_BUDGET_MS = (Number(process.env.TICK_RUN_MINUTES) > 0 ? Number(process.env.TICK_RUN_MINUTES) : 55) * 60 * 1000;
 
 function envFlag(name, def) {
   const v = process.env[name];
@@ -83,24 +84,40 @@ async function main() {
     return;
   }
 
-  const { spans } = await upcomingSpans();
-  console.log(`channel=${path} · ${spans.length} upcoming span(s) computed for this run`);
-
   const startedAt = Date.now();
+  let spans = null;
+  let spansFetchedAt = 0;
   let iteration = 0;
   for (;;) {
     iteration += 1;
-    const now = new Date();
-    const current = spans.find((s) => now >= s.on && now < s.off);
-    console.log(
-      `[check ${iteration}] ${now.toISOString()}${current ? ` · inside span through ${current.off.toISOString()}` : ' · no active span'}`,
-    );
-    await flipIfNeeded(!!current);
+    // A transient Hebcal or LG error must not end the run: log it and try
+    // again on the next check. Ending early would leave a gap until the
+    // next run starts.
+    try {
+      if (!spans || Date.now() - spansFetchedAt >= SPAN_REFRESH_MS) {
+        try {
+          spans = (await upcomingSpans()).spans;
+          spansFetchedAt = Date.now();
+          console.log(`channel=${path} · ${spans.length} upcoming span(s) computed`);
+        } catch (e) {
+          if (!spans) throw e;
+          console.log(`Schedule refresh failed (${e.message}) — keeping the previous schedule.`);
+        }
+      }
+      const now = new Date();
+      const current = spans.find((s) => now >= s.on && now < s.off);
+      console.log(
+        `[check ${iteration}] ${now.toISOString()}${current ? ` · inside span through ${current.off.toISOString()}` : ' · no active span'}`,
+      );
+      await flipIfNeeded(!!current);
+    } catch (e) {
+      console.log(`[check ${iteration}] failed: ${e.message} — retrying at the next check.`);
+    }
 
     if (Date.now() - startedAt + POLL_INTERVAL_MS >= RUN_BUDGET_MS) break;
     await sleep(POLL_INTERVAL_MS);
   }
-  console.log('Run budget reached — exiting; next hourly run picks up from here.');
+  console.log('Run budget reached — exiting; the workflow chains the next run.');
 }
 
 main().catch((e) => {
